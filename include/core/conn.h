@@ -7,29 +7,28 @@
 
 #include <stddef.h>
 
-// Forward declarations de estruturas usadas internamente
 typedef struct zeus_server zeus_server_t;
-typedef struct zeus_io_event zeus_io_event_t; // Se esta for interna ao event_loop, defina-a aqui
+typedef struct zeus_io_event zeus_io_event_t; 
 
 /**
- * @brief Represents a single HTTP connection (socket).
- * ESTA É A DEFINIÇÃO COMPLETA
+ * Represents a single HTTP connection (socket)
  */
 typedef struct zeus_conn {
-    zeus_io_event_t event;          /**< The I/O event wrapper for this connection. */
-    zeus_server_t *server;          /**< Back-reference to the server instance. */
+    zeus_io_event_t event;          /** The I/O event wrapper for this connection. */
+    zeus_server_t *server;          /** Back-reference to the server instance. */
     
-    // --- Parsing State ---
-    int parser_state;               /**< Current state of the HTTP State Machine. */
+    /** Parsing State */
+    int parser_state;               /** Current state of the HTTP State Machine. */
     size_t header_len_count;
     size_t headers_count;
-    char read_buffer[4096];         /**< Fixed-size read buffer. */
+    char read_buffer[4096];         /** Fixed-size read buffer. */
     size_t buffer_used;
-    char *parse_cursor;             /**< Current position in read_buffer for parsing. */
+    char *parse_cursor;             /** Current position in read_buffer for parsing. */
     
-    // --- Request/Response Data ---
+    /** Request/Response Data */
     zeus_request_t req;
     zeus_response_t res;
 } zeus_conn_t;
+
 
 #endif // ZEUS_CONN_H
