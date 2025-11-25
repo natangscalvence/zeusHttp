@@ -1,0 +1,17 @@
+*.o
+*.a
+*.so
+*.exe
+*.out
+
+# The compiled binary
+zeushttp
+
+# Debug dumps
+*.stackdump
+*.core
+
+# VSCode and editors
+.vscode/
+.idea/
+*.swp
