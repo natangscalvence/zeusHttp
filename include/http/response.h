@@ -2,6 +2,7 @@
  * include/http/response.h
  * Function declarations for the HTTP response subsystem.
  */
+
 #ifndef ZEUS_RESPONSE_H
 #define ZEUS_RESPONSE_H
 
