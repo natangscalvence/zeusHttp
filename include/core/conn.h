@@ -14,8 +14,9 @@ typedef struct zeus_server zeus_server_t;
 typedef struct zeus_io_event zeus_io_event_t; 
 
 /**
- * Represents a single HTTP connection (socket).
+ * Represents a single HTTP connection (socket)
  */
+
 typedef struct zeus_conn {
     zeus_io_event_t event;          /** The I/O event wrapper for this connection. */
     zeus_server_t *server;          /** Back-reference to the server instance. */
@@ -30,8 +31,10 @@ typedef struct zeus_conn {
     char response_buffer[MAX_RESPONSE_BUFFER];
     size_t response_len;
 
+
     zeus_request_t req;
     zeus_response_t res;
 } zeus_conn_t;
+
 
 #endif // ZEUS_CONN_H
