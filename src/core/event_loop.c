@@ -41,8 +41,8 @@
 
   static void accept_connection_cb(zeus_io_event_t *ev);
   static void handle_read_cb(zeus_io_event_t *ev);
-  static void close_connection(zeus_conn_t *conn);
   static void parse_http_request(zeus_conn_t *conn);
+  void close_connection(zeus_conn_t *conn);
 
   /**
    * Sets a file descriptor to non-blocking mode.
@@ -209,7 +209,7 @@ static void parse_http_request(zeus_conn_t *conn) {
     char *end_of_headers = NULL;
 
     /**
-     * Lookf for "\r\n\r\n" which signifiers the end of headers.
+     * Look for "\r\n\r\n" which signifiers the end of headers.
      */
 
     end_of_headers = strstr(buffer, "\r\n\r\n");
@@ -277,7 +277,7 @@ static void parse_http_request(zeus_conn_t *conn) {
  * Cleans up resources and closes the connection.
  */
 
- static void close_connection(zeus_conn_t *conn) {
+ void close_connection(zeus_conn_t *conn) {
     #ifdef __linux__
     zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_DEL, 0);
     #else 
@@ -285,9 +285,6 @@ static void parse_http_request(zeus_conn_t *conn) {
     #endif 
 
     close(conn->event.fd);
-    if (conn->read_buffer) {
-        free(conn->read_buffer);
-    }
 
     free(conn);
     printf("Connection FD %d closed.\n", conn->event.fd);
@@ -410,36 +407,14 @@ int zeus_server_add_handler(zeus_server_t *server, const char *path, zeus_handle
     return router_add_handler(server, path, handler);
 }
 
-/**
- * Sets the HTTP status code.
- */
-void zeus_response_set_status(zeus_response_t *res, uint16_t status_code) {
-    res->status_code = status_code;
-}
-
-/**
- * Adds an HTTP header (placeholder).
- */
-int zeus_response_add_header(zeus_response_t *res, const char *key, const char *value) {
-    printf("Header to be added: %s: %s\n", key, value);
-    return 0;
-}
-
-/**
- * Sends response data (placeholder).
- */
-int zeus_response_send_data(zeus_response_t *res, const char *data, size_t len) {
-    printf("Sending $zu bytes of data. STATUS: %u\n", len, res->status_code);
-    return 0;
-}
 
 /**
  * Sends a file using zero-copy (placeholder).
- */
+ *
 int zeus_response_send_file(zeus_response_t *res, const char *filepath) {
-    printf("Requested send_file for: 5s\n", filepath);
     return 0;
 }
+*/
 
 
 

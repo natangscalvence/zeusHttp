@@ -12,49 +12,58 @@
 static int parse_start_line(zeus_conn_t *conn) {
     char *buffer = conn->read_buffer;
     char *end_of_line = strstr(buffer, "\r\n");
+    char *start = buffer;
+    char *space_one, *space_two;
 
     if (!end_of_line) {
-        conn->parser_state = PS_START_LINE;
-        return 0;
+        return -1;      /** Need more data or malformed. */
     }
 
-    *end_of_line = '\0';
-    char *line = buffer;
-    char *token;
-
     /**
-     * Parse method.
+     * Find the first space (end of METHOD)
      */
-
-    token = strtok(line, " ");
-    if (!token) {
+    space_one = strchr(start, ' ');
+    if (!space_one) {
         return -1;
     }
-    if (strncasecmp(token, "GET", 3) != 0 && strncasecmp(token, "POST", 4) != 0) {
-        return -1;
-    }
-    conn->req.method = token;
+    *space_one = '\0';  // end of METHOD.
 
     /**
-     * Parse path.
+     * Find the second space (end of PATH).
      */
 
-    token = strtok(NULL, " ");
-    if (!token || strstr(token, "../")) {
-        return -1;  // Path traversal or missing path.
-    }
-    conn->req.path = token;
-
-    /**
-     * Parse HTTP version.
-     */
-
-     token = strtok(NULL, "\r");
-     if (!token || strncasecmp(token, "HTTP/.1", 7) != 0) {
+     space_two = strchr(space_one + 1, ' ');
+     if (!space_two) {
         return -1;
      }
-     conn->parse_cursor = end_of_line + 2;
-     return 0;
+     *space_two = '\0';     /** end of PATH */
+
+     /**
+      * Verify and assign the METHOD.
+      */
+     if (strncasecmp(start, "GET", 3) != 0 && strncasecmp(start, "POST", 4) != 0) {
+        return -1;
+     }
+     conn->req.method = start;
+
+     /**
+      * Verify and assign PATH.
+      */
+     conn->req.path = space_one + 1;
+     if (strstr(conn->req.path, "../")) {
+        return -1;
+     }
+
+     /**
+      * Verify the version
+      */
+     char *version = space_two + 1;
+     if (strncasecmp(version, "HTTP/1.", 7) != 0) {
+        return -1;
+     }
+
+     conn->parse_cursor = end_of_line + 3;
+     return 1;
 }
 
 /**
@@ -65,12 +74,14 @@ void http_parser_run(zeus_conn_t *conn) {
         return;
     }
     if (conn->parser_state == PS_START_LINE) {
-        if (parse_start_line(conn) != 0) {
+
+        int result = parse_start_line(conn);
+
+        if (result == 1) {
+            conn->parser_state = PS_HEADERS;
+        } else if (result == -1) {
             conn->parser_state = PS_ERROR;
             return;
-        }
-        if (conn->parser_state != PS_START_LINE) {
-            conn->parser_state != PS_HEADERS;
         } else {
             return;
         }
@@ -93,14 +104,14 @@ void http_parser_run(zeus_conn_t *conn) {
      */
 
     if (conn->parser_state == PS_HEADERS_FINISHED) {
-        conn->parser_state == PS_COMPLETED;
+        conn->parser_state = PS_COMPLETED;
     }
 
     /**
      * PS_COMPLETE (Dispatch Handler)
      */
     if (conn->parser_state == PS_COMPLETED) {
-        printf("Request fully parsed. Dispatching. Method: %s, Path: %s\n",
+        printf("Parser: Dispatching. Method: %s, Path: %s\n",
             conn->req.method, conn->req.path);
         
         router_dispatch(conn);
