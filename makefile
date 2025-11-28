@@ -9,6 +9,8 @@ HTTP_DIR = src/http
 CORE_INCLUDE_DIR = $(INCLUDE_DIR)/core/
 HTTP_INCLUDE_DIR = $(INCLUDE_DIR)/http/
 HTTP_FILE_DIR = $(HTTP_DIR)
+SECURITY_DIR = src/security
+
 
 
 
@@ -20,6 +22,7 @@ OBJS = \
 	$(HTTP_DIR)/router.o \
 	$(HTTP_DIR)/response.o \
 	$(HTTP_FILE_DIR)/file.o \
+	$(SECURITY_DIR)/privileges.o \
 	$(SRC_DIR)/main.o
 
 $(TARGET): $(OBJS)
@@ -41,6 +44,9 @@ $(HTTP_DIR)/response.o: $(HTTP_DIR)/response.c $(INCLUDE_DIR)/zeushttp.h $(CORE_
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(HTTP_FILE_DIR)/file.o: $(HTTP_FILE_DIR)/file.c $(INCLUDE_DIR)/zeushttp.h $(CORE_INCLUDE_DIR)/conn.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(SECURITY_DIR)/privileges.o: $(SECURITY_DIR)/privileges.c $(INCLUDE_DIR)/zeushttp.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 .PHONY: clean

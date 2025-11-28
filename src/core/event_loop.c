@@ -18,6 +18,8 @@
 #define ZEUS_EVENT_LOOP_ID int
 #endif
 
+extern int zeus_drop_privileges();
+
 /**
  * Security limits, adjustable.
  */
@@ -293,73 +295,114 @@ static void parse_http_request(zeus_conn_t *conn) {
  /**
   * Initializes the server, creates epoll instance, and binds the socket.
   */
+
  zeus_server_t* zeus_server_init(const char *host, int port) {
     zeus_server_t *server = calloc(1, sizeof(zeus_server_t));
     if (!server) {
         return NULL;
     }
 
+    /**
+     * Create Socket (using SOCK_NONBLOCK for asynchronous I/O)
+     */
+
     server->listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (server->listen_fd < 0) {
-        perror("socket");
+        perror("socket failed");
         free(server);
         return NULL;
     }
 
-    struct sockaddr_in addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(port),
-        .sin_addr.s_addr = inet_addr(host)
-    };
+    /**
+     * Set Socket Options (SO_REUSEADDR)
+     */
 
-    if (bind(server->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
-        close(server->listen_fd);
-        free(server);
-        return NULL;
-    }
-
-    if (listen(server->listen_fd, 128) < 0) {
-        perror("listen");
+    int opt = 1;
+    if (setsockopt(server->listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt SO_REUSEADDR failed");
         close(server->listen_fd);
         free(server);
         return NULL;
     }
 
     /**
-     * Create EPOLL before register events.
+     * Bind Address
+     */
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
+        perror("inet_pton failed (invalid host address)");
+        close(server->listen_fd);
+        free(server);
+        return NULL;
+    }
+
+    if (bind(server->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind failed");
+        close(server->listen_fd);
+        free(server);
+        return NULL;
+    }
+
+    /**
+     * Listen (Start accepting connections)
+     */
+
+    if (listen(server->listen_fd, 4096) < 0) {
+        perror("listen failed");
+        close(server->listen_fd);
+        free(server);
+        return NULL;
+    }
+
+    /**
+     * Drop Privileges (Security check, after listen)
+     */
+
+    if (geteuid() == 0 && zeus_drop_privileges() < 0) {
+        fprintf(stderr, "Fatal: Cannot drop privileges. Aborting.\n");
+        close(server->listen_fd);
+        free(server);
+        return NULL;
+    }
+
+    /**
+     * Create EPOLL instance
      */
 
     server->loop_fd = epoll_create1(0);
     if (server->loop_fd < 0) {
-        perror("epoll_create1");
+        perror("epoll_create1 failed");
+        close(server->listen_fd);
+        free(server);
         return NULL;
     }
     
     /**
-     * Register the listen socket's event (uses accept_connection_cb)
-     * NOTE: The server struct itself holds the listen_fd event into temporarily
-     * for simplicity, we define the listen event locally here.
+     * Register the listen socket's event
      */
+    
     static zeus_io_event_t listen_event;
     listen_event.fd = server->listen_fd;
     listen_event.data = server;
     listen_event.read_cb = accept_connection_cb;
 
-    printf("listen_fd = %d\n", server->listen_fd);
-
-    if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN) == -1) {
+    if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
         perror("epoll_ctl listen_fd failed");
-        
-        /**
-         * Cleanup ...
-         */
+        close(server->loop_fd);
+        close(server->listen_fd);
+        free(server);
         return NULL;
     }
 
+    printf("listen_fd = %d\n", server->listen_fd);
     printf("zeusHttp running on %s:%d (FD: %d)\n", host, port, server->listen_fd);
+    printf("Security: Privileges successfully dropped.\n"); 
+    
     return server;
- }
+}
 
  /**
   * Starts the main I/O loop using epoll_wait.
