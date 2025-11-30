@@ -18,6 +18,7 @@ TARGET = zeushttp
 
 OBJS = \
 	$(CORE_DIR)/event_loop.o \
+	$(CORE_DIR)/worker.o \
 	$(HTTP_DIR)/http_parser.o \
 	$(HTTP_DIR)/router.o \
 	$(HTTP_DIR)/response.o \
@@ -29,6 +30,9 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET) $(LDFLAGS)
 
 $(CORE_DIR)/event_loop.o: $(CORE_DIR)/event_loop.c $(INCLUDE_DIR)/zeushttp.h $(HTTP_INCLUDE_DIR)/http.h $(CORE_INCLUDE_DIR)/conn.h $(CORE_INCLUDE_DIR)/io_event.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(CORE_DIR)/worker.o: $(CORE_DIR)/worker.c $(INCLUDE_DIR)/zeushttp.h $(CORE_INCLUDE_DIR)/worker.h $(CORE_INCLUDE_DIR)/conn.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(SRC_DIR)/main.o: $(SRC_DIR)/main.c $(INCLUDE_DIR)/zeushttp.h

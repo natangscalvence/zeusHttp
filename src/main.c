@@ -30,12 +30,9 @@ int main() {
         return 1;
     }
 
-    zeus_server_add_handler(server, "/", home_handler);
-    zeus_server_add_handler(server, "/file", file_handler);
-
-    printf("Starting zeusHTTP...\n");
-    if (zeus_server_run(server) != 0) {
-        fprintf(stderr, "Server execution error.\n");
+    printf("Master Process starting Worker Model...\n");
+    if (worker_master_start(server, 4) != 0) {
+        fprintf(stderr, "Fatal: Worker master failed.\n");
         return 1;
     }
 

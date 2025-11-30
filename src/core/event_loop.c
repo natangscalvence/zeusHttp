@@ -41,6 +41,7 @@ extern int zeus_drop_privileges();
   * Forward declarations for callback.
   */
 
+  static int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t events);
   static void accept_connection_cb(zeus_io_event_t *ev);
   static void handle_read_cb(zeus_io_event_t *ev);
   static void parse_http_request(zeus_conn_t *conn);
@@ -57,6 +58,77 @@ static int set_nonblocking(int fd) {
     }
 
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+/**
+ * Executes the blocking event loop for a single worker process.
+ */
+
+int zeus_worker_loop(zeus_server_t *server) {
+    /**
+     * Create epoll instance.
+     */
+
+    server->loop_fd = epoll_create1(0);
+    if (server->loop_fd < 0) {
+        perror("Worker fata: epoll_create1 failed.");
+        return -1;
+    }
+
+    /**
+     * Register the inherited listen socket (FD is already valid and non-blocking).
+     */
+
+    static zeus_io_event_t listen_event;
+    listen_event.fd = server->listen_fd;
+    listen_event.data = server;
+    listen_event.read_cb = accept_connection_cb;
+
+    /**
+     * Register for read events (epollin) in edge-triggered mode (epollet).
+     */
+    
+    if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
+        perror("Worker fatal: epoll_ctl listen_fd failed");
+        close(server->loop_fd);
+        return -1;
+    }
+
+    printf("Worker (PID %d) is ready to accept connections.\n", getpid());
+
+    /**
+     * Blocking I/O loop.
+     */
+
+    struct epoll_event events[ZEUS_MAX_EVENTS];
+    while (1) {
+        int n_fds = epoll_wait(server->loop_fd, events, ZEUS_MAX_EVENTS, -1);
+        if (n_fds < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            perror("epoll_wait fatal error");
+            break;
+        }
+
+        for (int i = 0; i < n_fds; i++) {
+            zeus_io_event_t *ev = events[i].data.ptr;
+
+            if (events[i].events & EPOLLIN) {
+                if (ev->read_cb) {
+                    ev->read_cb(ev);
+                }
+            }
+
+            if (events[i].events & EPOLLOUT) {
+                if (ev->write_cb) {
+                    ev->write_cb(ev);
+                }
+            }
+        }
+        close(server->loop_fd);
+        return -1;
+    }
 }
 
 /**
