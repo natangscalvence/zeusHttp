@@ -2,7 +2,7 @@
 
 <img width="505" height="180" alt="zeus" src="https://github.com/user-attachments/assets/e56d6796-2dae-469f-8dc0-25f0c82529d1" />
 
-# zeusHTTP - High-Performance C Web Server Library
+# zeusHTTP - High Performance C Web Server Library
 
 ## Project Philosophy
 
