@@ -3,6 +3,7 @@
 #include "../../include/core/conn.h"
 #include "../../include/core/server.h"
 #include "../../include/core/io_event.h"
+#include "../../include/core/log.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -70,7 +71,7 @@ int zeus_worker_loop(zeus_server_t *server) {
 
     server->loop_fd = epoll_create1(0);
     if (server->loop_fd < 0) {
-        perror("Worker fatal: epoll_create1 failed.");
+        ZLOG_PERROR("Worker fatal: epoll_create1 failed.");
         return -1;
     }
 
@@ -85,12 +86,12 @@ int zeus_worker_loop(zeus_server_t *server) {
     listen_event.write_cb = NULL;
 
     if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
-        perror("Worker fatal: epoll_ctl listen_fd failed");
+        ZLOG_PERROR("Worker fatal: epoll_ctl listen_fd failed");
         close(server->loop_fd);
         return -1;
     }
 
-    printf("Worker (PID %d) is ready to accept connections.\n", getpid());
+    ZLOG_INFO("Worker (PID %d) is ready to accept connections.\n", getpid());
 
     /**
      * Blocking I/O loop.
@@ -104,7 +105,7 @@ int zeus_worker_loop(zeus_server_t *server) {
             if (errno == EINTR) {
                 continue;
             }
-            perror("epoll_wait fatal error");
+            ZLOG_PERROR("epoll_wait fatal error");
             break;  /** Break outer while, then clean up below */
         }
 
@@ -211,7 +212,7 @@ static void accept_connection_cb(zeus_io_event_t *ev) {
 
         conn->ssl_conn = SSL_new(server->ssl_ctx);
         if (!conn->ssl_conn) {
-            perror("SSL_new failed");
+            ZLOG_PERROR("SSL_new failed");
             close_connection(conn);
             continue;
         }
@@ -223,16 +224,16 @@ static void accept_connection_cb(zeus_io_event_t *ev) {
         conn->handshake_done = 0;
 
         if (zeus_event_ctl(server, &conn->event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
-            perror("epoll_ctl new conn failed.");
+            ZLOG_PERROR("epoll_ctl new conn failed.");
             close_connection(conn);     /** safe cleanup */
             continue;
         }
 
-        printf("New connection accepted: FD %d (handshake started).\n", conn_fd);
+        ZLOG_INFO("New connection accepted: FD %d (handshake started).\n", conn_fd);
     }
 
     if (conn_fd == -1 && errno != EWOULDBLOCK && errno != EAGAIN) {
-        perror("Accept error");
+        ZLOG_PERROR("Accept error");
     }
 }
 
@@ -308,7 +309,7 @@ static void handle_read_cb(zeus_io_event_t *ev) {
              * Graceful shutdown (closed by client).
              */
 
-            printf("Connection closed by client: FD %d\n", conn->event.fd);
+            ZLOG_INFO("Connection closed by client: FD %d\n", conn->event.fd);
             close_connection(conn);
             return;
         } else {
@@ -322,7 +323,7 @@ static void handle_read_cb(zeus_io_event_t *ev) {
                 if (errno == EWOULDBLOCK || errno == EAGAIN) {
                     return;     /** Socket exhausted :p */
                 }
-                perror("read error");
+                ZLOG_PERROR("read error");
             }
             
             close_connection(conn);
@@ -335,7 +336,7 @@ static void handle_read_cb(zeus_io_event_t *ev) {
      */
 
      if (conn->buffer_used >= sizeof(conn->read_buffer) - 1) {
-        printf("Security: Buffer limit reached on FD %d\n", conn->event.fd);
+        ZLOG_INFO("Security: Buffer limit reached on FD %d\n", conn->event.fd);
         close_connection(conn);
     }
 }
@@ -364,7 +365,7 @@ static void parse_http_request(zeus_conn_t *conn) {
              * found the end of headers, it's an attack of malformed request.
              */
             if (len > MAX_HEADERS_LEN) {
-                printf("Security Limit: Headers too long.\n");
+                ZLOG_INFO("Security Limit: Headers too long.\n");
                 conn->parser_state = PS_ERROR;
                 /**
                  * TODO: 431 response.
@@ -385,7 +386,7 @@ static void parse_http_request(zeus_conn_t *conn) {
          * 3 - Set conn->req->method and conn->req->path
          */
         conn->parser_state = PS_HEADERS_FINISHED;
-        printf("HTTP headers finished processing.\n");
+        ZLOG_INFO("HTTP headers finished processing.\n");
 
         /**
          * After processing headers, determine body state (Content-Lenght vs Chunked).
@@ -396,7 +397,7 @@ static void parse_http_request(zeus_conn_t *conn) {
     }
 
     if (conn->parser_state == PS_COMPLETED) {
-        printf("Request fully parsed. Dispatching handler.\n");
+        ZLOG_INFO("Request fully parsed. Dispatching handler.\n");
     }
 
     /**
@@ -471,7 +472,7 @@ void close_connection(zeus_conn_t *conn) {
 
     server->listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (server->listen_fd < 0) {
-        perror("socket failed");
+        ZLOG_PERROR("socket failed");
         free(server);
         return NULL;
     }
@@ -482,7 +483,7 @@ void close_connection(zeus_conn_t *conn) {
 
     int opt = 1;
     if (setsockopt(server->listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt SO_REUSEADDR failed");
+        ZLOG_PERROR("setsockopt SO_REUSEADDR failed");
         close(server->listen_fd);
         free(server);
         return NULL;
@@ -496,14 +497,14 @@ void close_connection(zeus_conn_t *conn) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     if (inet_pton(AF_INET, host, &addr.sin_addr) <= 0) {
-        perror("inet_pton failed (invalid host address)");
+        ZLOG_PERROR("inet_pton failed (invalid host address)");
         close(server->listen_fd);
         free(server);
         return NULL;
     }
 
     if (bind(server->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind failed");
+        ZLOG_PERROR("bind failed");
         close(server->listen_fd);
         free(server);
         return NULL;
@@ -514,7 +515,7 @@ void close_connection(zeus_conn_t *conn) {
      */
 
     if (listen(server->listen_fd, 4096) < 0) {
-        perror("listen failed");
+        ZLOG_PERROR("listen failed");
         close(server->listen_fd);
         free(server);
         return NULL;
@@ -525,7 +526,7 @@ void close_connection(zeus_conn_t *conn) {
      */
 
     if (geteuid() == 0 && zeus_drop_privileges() < 0) {
-        fprintf(stderr, "Fatal: Cannot drop privileges. Aborting.\n");
+        ZLOG_FATAL("Fatal: Cannot drop privileges. Aborting.\n");
         close(server->listen_fd);
         free(server);
         return NULL;
@@ -543,7 +544,7 @@ void close_connection(zeus_conn_t *conn) {
     /** 
 
     if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
-        perror("epoll_ctl listen_fd failed");
+        ZLOG_PERROR("epoll_ctl listen_fd failed");
         close(server->loop_fd);
         close(server->listen_fd);
         free(server);
@@ -551,9 +552,9 @@ void close_connection(zeus_conn_t *conn) {
     }
     */
 
-    printf("listen_fd = %d\n", server->listen_fd);
-    printf("zeusHttp running on %s:%d (FD: %d)\n", host, port, server->listen_fd);
-    printf("Security: Privileges successfully dropped.\n"); 
+    ZLOG_INFO("listen_fd = %d\n", server->listen_fd);
+    ZLOG_INFO("zeusHttp running on %s:%d (FD: %d)\n", host, port, server->listen_fd);
+    ZLOG_INFO("Security: Privileges successfully dropped.\n"); 
     
     return server;
 }
@@ -570,7 +571,7 @@ int zeus_server_run(zeus_server_t *server) {
         int n_fds = epoll_wait(server->loop_fd, events, ZEUS_MAX_EVENTS, -1);
         if (n_fds == -1) {
             if (errno == EINTR) continue;
-            perror("epoll_wait failed");
+            ZLOG_PERROR("epoll_wait failed");
             return -1;
         }
 
@@ -580,7 +581,7 @@ int zeus_server_run(zeus_server_t *server) {
             /** 
              * READ EVENTS 
              */
-            
+
             if (events[i].events & EPOLLIN) {
                 if (ev->read_cb)
                     ev->read_cb(ev);

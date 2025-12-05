@@ -7,6 +7,7 @@
 #include "../../include/zeushttp.h"
 #include "../../include/core/worker.h"
 #include "../../include/core/conn.h" 
+#include "../../include/core/log.h" 
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -34,9 +35,9 @@ static pid_t worker_spawn(zeus_server_t *server, int worker_id) {
         return -1;
     }
     if (pid == 0) {
-        printf("Worker %d (PID %d) starting up.\n", worker_id, getpid());
+        ZLOG_INFO("Worker %d (PID %d) starting up.\n", worker_id, getpid());
         if (zeus_drop_privileges() < 0) {
-            fprintf(stderr, "Worker Fatal: Cannot drop privileges. Exiting.\n");
+            ZLOG_FATAL(stderr, "Worker Fatal: Cannot drop privileges. Exiting.\n");
             exit(EXIT_FAILURE);
         }
         /**
@@ -45,10 +46,10 @@ static pid_t worker_spawn(zeus_server_t *server, int worker_id) {
 
         int rc = worker_process_run(server);
         if (rc == 0) {
-            printf("Worker %d (PID %d) exiting normally.\n", worker_id, getpid());
+            ZLOG_INFO("Worker %d (PID %d) exiting normally.\n", worker_id, getpid());
             _exit(EXIT_SUCCESS);
         } else {
-            fprintf(stderr, "Worker %d (PID %d) exiting with error (rc=%d).\n", worker_id, getpid(), rc);
+            ZLOG_FATAL("Worker %d (PID %d) exiting with error (rc=%d).\n", worker_id, getpid(), rc);
             _exit(EXIT_FAILURE);
         }
     }
@@ -65,7 +66,7 @@ int worker_master_start(zeus_server_t *server, int num_workers) {
         perror("calloc workers failed.");
         return -1;
     }
-    printf("Master (PID %d) starting %d workers.\n", getpid(), num_workers);
+    ZLOG_INFO("Master (PID %d) starting %d workers.\n", getpid(), num_workers);
 
     /**
      * Spawn initial workers.
@@ -85,7 +86,7 @@ int worker_master_start(zeus_server_t *server, int num_workers) {
         pid_t dead_pid = waitpid(-1, &status, 0);
 
         if (dead_pid > 0) {
-            printf("Master: Worker (PID %d) died. Status: %d\n", dead_pid, status);
+            ZLOG_INFO("Master: Worker (PID %d) died. Status: %d\n", dead_pid, status);
 
             /**
              * Restart worker.
@@ -95,7 +96,7 @@ int worker_master_start(zeus_server_t *server, int num_workers) {
                     Workers[i].pid = worker_spawn(server, i);
                     if (Workers[i].pid > 0) {
                         Workers[i].status = WORKER_STATUS_RUNNING;
-                        printf("Master: Worker %d successfully restarted (New PID %d).\n", i, Workers[i].pid);
+                        ZLOG_INFO("Master: Worker %d successfully restarted (New PID %d).\n", i, Workers[i].pid);
                     }
                     break;
                 }
@@ -117,6 +118,6 @@ int worker_master_start(zeus_server_t *server, int num_workers) {
  * The main function executed by the worker process.
  */
 int worker_process_run(zeus_server_t *server) {
-    printf("Worker (PID %d) entering event loop.\n", getpid());
+    ZLOG_INFO("Worker (PID %d) entering event loop.\n", getpid());
     return zeus_worker_loop(server);
 }
