@@ -1,6 +1,7 @@
 #include "../../include/zeushttp.h"
 #include "../../include/http/http.h"
 #include "../../include/core/conn.h"
+#include "../../include/core/server.h"
 #include "../../include/core/io_event.h"
 
 #include <stdio.h>
@@ -18,7 +19,13 @@
 #define ZEUS_EVENT_LOOP_ID int
 #endif
 
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+extern int zeus_handle_ssl_handshake(zeus_conn_t *conn);
+extern void handle_write_cb(zeus_io_event_t *ev);
 extern int zeus_drop_privileges();
+
 
 /**
  * Security limits, adjustable.
@@ -28,20 +35,11 @@ extern int zeus_drop_privileges();
  #define MAX_HEADERS 100            /** 100 headers maximum. */
 
 
-/**
- * Main server structure definition (internal).
- */
-
- struct zeus_server {
-    ZEUS_EVENT_LOOP_ID loop_fd;
-    int listen_fd;
- };
-
  /**
   * Forward declarations for callback.
   */
 
-  static int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t events);
+  int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t events);
   static void accept_connection_cb(zeus_io_event_t *ev);
   static void handle_read_cb(zeus_io_event_t *ev);
   static void parse_http_request(zeus_conn_t *conn);
@@ -65,13 +63,14 @@ static int set_nonblocking(int fd) {
  */
 
 int zeus_worker_loop(zeus_server_t *server) {
+
     /**
      * Create epoll instance.
      */
 
     server->loop_fd = epoll_create1(0);
     if (server->loop_fd < 0) {
-        perror("Worker fata: epoll_create1 failed.");
+        perror("Worker fatal: epoll_create1 failed.");
         return -1;
     }
 
@@ -83,11 +82,8 @@ int zeus_worker_loop(zeus_server_t *server) {
     listen_event.fd = server->listen_fd;
     listen_event.data = server;
     listen_event.read_cb = accept_connection_cb;
+    listen_event.write_cb = NULL;
 
-    /**
-     * Register for read events (epollin) in edge-triggered mode (epollet).
-     */
-    
     if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
         perror("Worker fatal: epoll_ctl listen_fd failed");
         close(server->loop_fd);
@@ -101,6 +97,7 @@ int zeus_worker_loop(zeus_server_t *server) {
      */
 
     struct epoll_event events[ZEUS_MAX_EVENTS];
+
     while (1) {
         int n_fds = epoll_wait(server->loop_fd, events, ZEUS_MAX_EVENTS, -1);
         if (n_fds < 0) {
@@ -108,11 +105,21 @@ int zeus_worker_loop(zeus_server_t *server) {
                 continue;
             }
             perror("epoll_wait fatal error");
-            break;
+            break;  /** Break outer while, then clean up below */
         }
 
         for (int i = 0; i < n_fds; i++) {
             zeus_io_event_t *ev = events[i].data.ptr;
+
+            if (!ev) {
+
+                /** 
+                 * Defensive logging 
+                 */
+
+                fprintf(stderr, "Worker (PID %d) got NULL event.ptr\n", getpid());
+                continue;
+            }
 
             if (events[i].events & EPOLLIN) {
                 if (ev->read_cb) {
@@ -126,15 +133,24 @@ int zeus_worker_loop(zeus_server_t *server) {
                 }
             }
         }
-        close(server->loop_fd);
-        return -1;
     }
+
+    /**
+     * Cleanup on exit from loop 
+     */
+    
+    if (server->loop_fd >= 0) {
+        close(server->loop_fd);
+        server->loop_fd = -1;
+    }
+
+    return -1;  /** Indicate worker loop terminated unexpectedly */
 }
 
 /**
  * Adds or modifies an FD in the epoll instance.
  */
-static int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t events) {
+int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t events) {
 #ifdef __linux__
     struct epoll_event event;
     event.events = events;
@@ -156,13 +172,18 @@ static int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, ui
 static void accept_connection_cb(zeus_io_event_t *ev) {
     zeus_server_t *server = (zeus_server_t *)ev->data;
     struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
+    socklen_t addr_len;
     int conn_fd;
 
     /**
      * Loop to accept all pending connections (edge-triggered behavior safety)
      */
-    while ((conn_fd = accept(server->listen_fd, (struct sockaddr *)&client_addr, &addr_len)) > 0) {
+
+    while (1) {
+        addr_len = sizeof(client_addr); /* reset for each accept() */
+        conn_fd = accept(server->listen_fd, (struct sockaddr *)&client_addr, &addr_len);
+        if (conn_fd <= 0) break;
+
         if (set_nonblocking(conn_fd) == -1) {
             close(conn_fd);
             continue;
@@ -171,33 +192,45 @@ static void accept_connection_cb(zeus_io_event_t *ev) {
         /**
          * Allocate and initialize the connection structure.
          */
+
         zeus_conn_t *conn = calloc(1, sizeof(zeus_conn_t));
         if (!conn) {
             close(conn_fd);
             continue;
         }
 
-        /**
-         * Initialize connection and event.
-         */
         conn->server = server;
         conn->event.fd = conn_fd;
         conn->event.data = conn;
         conn->event.read_cb = handle_read_cb;
-        conn->event.write_cb = NULL;       /** Initially not write. */
+        conn->event.write_cb = handle_write_cb;
 
         /**
-         * Add to the event loop, listen for reads (incoming data).
+         * Initialize the SSL object and handshake.
          */
-        if (zeus_event_ctl(server, &conn->event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
-            perror("epoll_ctl new conn failed.");
-            free(conn);
-            close(conn_fd);
 
+        conn->ssl_conn = SSL_new(server->ssl_ctx);
+        if (!conn->ssl_conn) {
+            perror("SSL_new failed");
+            close_connection(conn);
             continue;
         }
-        printf("New connection accepted: FD %d\n", conn_fd);
+
+        SSL_set_fd(conn->ssl_conn, conn_fd);
+        SSL_set_accept_state(conn->ssl_conn);
+
+        conn->is_ssl = 1;
+        conn->handshake_done = 0;
+
+        if (zeus_event_ctl(server, &conn->event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
+            perror("epoll_ctl new conn failed.");
+            close_connection(conn);     /** safe cleanup */
+            continue;
+        }
+
+        printf("New connection accepted: FD %d (handshake started).\n", conn_fd);
     }
+
     if (conn_fd == -1 && errno != EWOULDBLOCK && errno != EAGAIN) {
         perror("Accept error");
     }
@@ -205,73 +238,109 @@ static void accept_connection_cb(zeus_io_event_t *ev) {
 
 /**
  * Callback when a client socket is ready for reading (data available).
+ * It handles the TLS handshake continuation and the subsequent encrypted/plaintext
+ * reading.
  */
 
 static void handle_read_cb(zeus_io_event_t *ev) {
     zeus_conn_t *conn = (zeus_conn_t *)ev->data;
 
-    ssize_t bytes_read = 0;
-    while (conn->buffer_used < sizeof(conn->read_buffer) - 1) {
-        /**
-         * Read data directly into the connection's buffer, offset by
-         * buffer_used.
-         */
-        bytes_read = read(
-            conn->event.fd,
-            conn->read_buffer + conn->buffer_used,
-            sizeof(conn->read_buffer) - conn->buffer_used - 1
-        );
+    /**
+     * Manage TLS handshake continuation.
+     */
 
-        if (bytes_read > 0) {
-            conn->buffer_used = (size_t)bytes_read;
+    if (conn->is_ssl && !conn->handshake_done) {
+        int hs_result = zeus_handle_ssl_handshake(conn);
+        if (hs_result < 0) {
+            return;         /** Handshake failed. Connection closed internally. */
+        }
+
+        if (hs_result == 0) {
+            return;         /** Waiting for the next event. */
+        }
+    }
+
+    /**
+     * Determine the read function based on connection type.
+     */
+
+    ssize_t (*read_func)(int, void*, size_t) = read;
+    if (conn->is_ssl && conn->handshake_done) {
+        read_func = (ssize_t (*)(int, void*, size_t))SSL_read;
+    }
+    ssize_t bytes_received = 0;
+    int error = 0;
+
+    while (conn->buffer_used < sizeof(conn->read_buffer) - 1) {
+        size_t space_available = sizeof(conn->read_buffer) - conn->buffer_used - 1;
+
+        if (conn->is_ssl && conn->handshake_done) {
+            /**
+             * Read encrypted data.
+             */
+            bytes_received = SSL_read(conn->ssl_conn, conn->read_buffer + conn->buffer_used, space_available);
+        } else {
+            /**
+             * Read plaintext data.
+             */
+             bytes_received = read(conn->event.fd, conn->read_buffer + conn->buffer_used, space_available);
+        }
+
+        if (bytes_received > 0) {
+            conn->buffer_used += (size_t)bytes_received;
             conn->read_buffer[conn->buffer_used] = '\0';
 
             /**
              * Pass the control to the state machine.
              */
-            http_parser_run(conn);
 
-            /**
-             * If parsing finished or errored, stop reading.
-             */
-            if (conn->parser_state >= PS_COMPLETED) {
-                break;
+             http_parser_run(conn);
+
+             /**
+              * If parsing finished or errored, stop reading.
+              */
+
+            if (conn->parser_state >= PS_COMPLETED || conn->parser_state == PS_ERROR) {
+                return;
             }
-        } else if (bytes_read == 0) {
+        } else if (bytes_received == 0) {
             /**
-             * Connection closed by client.
+             * Graceful shutdown (closed by client).
              */
+
             printf("Connection closed by client: FD %d\n", conn->event.fd);
             close_connection(conn);
             return;
-        } else if (bytes_read == -1) {
-            if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                /**
-                 * Done reading for now (socket exhausted).
-                 */
-                return;
+        } else {
+            if (conn->is_ssl && conn->handshake_done) {
+                error = SSL_get_error(conn->ssl_conn, bytes_received);
+                if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+                    return;     /** Socket exhaustion or need writing. */
+                }
+                ERR_print_errors_fp(stderr);
+            } else {
+                if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                    return;     /** Socket exhausted :p */
+                }
+                perror("read error");
             }
-            /**
-             * Real read error.
-             */
-            perror("read error");
+            
             close_connection(conn);
             return;
         }
     }
 
     /**
-     * Security check: Buffer overflow prevention.
+     * Just a security check.
      */
-    if (conn->buffer_used >= sizeof(conn->read_buffer) - 1) {
-        /**
-         * Here we could send a 413 (Payload Too Large) or 431 (Header Fields Too Large).
-         */
+
+     if (conn->buffer_used >= sizeof(conn->read_buffer) - 1) {
         printf("Security: Buffer limit reached on FD %d\n", conn->event.fd);
-        /** TODO: send 431 response before closing. */
         close_connection(conn);
     }
 }
+
+
 
 
 /**
@@ -337,11 +406,7 @@ static void parse_http_request(zeus_conn_t *conn) {
      * first.
      */
 
-    /**
-     * JUST A TEMPORARY DISPATCH AND RESPONSE.
-     */
-    zeus_request_t fake_req = { .method = "GET", .path = "/" };
-    zeus_response_t fake_res = { .status_code = 200 };
+    router_dispatch(conn);
 
     close_connection(conn);
 }
@@ -351,18 +416,44 @@ static void parse_http_request(zeus_conn_t *conn) {
  * Cleans up resources and closes the connection.
  */
 
- void close_connection(zeus_conn_t *conn) {
-    #ifdef __linux__
+void close_connection(zeus_conn_t *conn) {
+    if (!conn) return;
+
+    int fd = conn->event.fd;
+    /* remove from epoll */
+#ifdef __linux__
     zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_DEL, 0);
-    #else 
-     /** TODO: Implement kqueue deletion logic here. */
-    #endif 
+#endif
 
-    close(conn->event.fd);
+    if (conn->ssl_conn) {
+        /** 
+         * Attempt non-blocking TLS close_notify exchange 
+         */
 
+        int r = SSL_shutdown(conn->ssl_conn);
+        if (r == 0) {
+
+            /**
+             * peer did not respond yet.
+             * Send FIN to avoid RST.
+             */
+
+            shutdown(fd, SHUT_RDWR);
+            SSL_shutdown(conn->ssl_conn);
+        }
+        SSL_free(conn->ssl_conn);
+        conn->ssl_conn = NULL;
+    } else {
+        shutdown(fd, SHUT_RDWR);
+    }
+
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    fprintf(stderr, "Connection FD %d closed.\n", fd);
     free(conn);
-    printf("Connection FD %d closed.\n", conn->event.fd);
- }
+}
 
  /**
   * Initializes the server, creates epoll instance, and binds the socket.
@@ -439,18 +530,6 @@ static void parse_http_request(zeus_conn_t *conn) {
         free(server);
         return NULL;
     }
-
-    /**
-     * Create EPOLL instance
-     */
-
-    server->loop_fd = epoll_create1(0);
-    if (server->loop_fd < 0) {
-        perror("epoll_create1 failed");
-        close(server->listen_fd);
-        free(server);
-        return NULL;
-    }
     
     /**
      * Register the listen socket's event
@@ -461,6 +540,8 @@ static void parse_http_request(zeus_conn_t *conn) {
     listen_event.data = server;
     listen_event.read_cb = accept_connection_cb;
 
+    /** 
+
     if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
         perror("epoll_ctl listen_fd failed");
         close(server->loop_fd);
@@ -468,6 +549,7 @@ static void parse_http_request(zeus_conn_t *conn) {
         free(server);
         return NULL;
     }
+    */
 
     printf("listen_fd = %d\n", server->listen_fd);
     printf("zeusHttp running on %s:%d (FD: %d)\n", host, port, server->listen_fd);
@@ -483,36 +565,62 @@ static void parse_http_request(zeus_conn_t *conn) {
 int zeus_server_run(zeus_server_t *server) {
 #ifdef __linux__
     struct epoll_event events[ZEUS_MAX_EVENTS];
+
     while (1) {
         int n_fds = epoll_wait(server->loop_fd, events, ZEUS_MAX_EVENTS, -1);
         if (n_fds == -1) {
-            if (errno == EINTR) {
-                continue;
-            }
+            if (errno == EINTR) continue;
             perror("epoll_wait failed");
             return -1;
         }
+
         for (int i = 0; i < n_fds; i++) {
             zeus_io_event_t *ev = events[i].data.ptr;
 
+            /** 
+             * READ EVENTS 
+             */
+            
             if (events[i].events & EPOLLIN) {
-                if (ev->read_cb) {
+                if (ev->read_cb)
                     ev->read_cb(ev);
-                }
             }
 
+            /** 
+             * WRITE EVENTS 
+             */
+
             if (events[i].events & EPOLLOUT) {
-                if (ev->write_cb) {
+
+                if (!ev->write_cb)
+                    continue;
+
+                zeus_conn_t *c = NULL;
+
+                if (ev->fd != server->listen_fd)
+                    c = (zeus_conn_t *)ev->data;
+
+                if (c) {
+
+                    if (c->is_ssl && !c->handshake_done) {
+                        continue;
+                    }
+
+                    /* ok to write */
+                    ev->write_cb(ev);
+                } else {
                     ev->write_cb(ev);
                 }
             }
         }
     }
+
     return 0;
-#else 
+
+#else
     fprintf(stderr, "Event loop not implemented for this OS.\n");
     return -1;
-#endif 
+#endif
 }
 
 /**

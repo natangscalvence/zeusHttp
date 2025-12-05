@@ -85,4 +85,10 @@ int zeus_response_send_data(zeus_response_t *res, const char *data, size_t len);
 
 int zeus_response_send_file(zeus_response_t *res, const char *filepath);
 
+/**
+ * Initialize the SSL context for the entire zeusHttp core.
+ */
+
+int tls_context_init(zeus_server_t *server, const char *cert_file, const char *key_file);
+
 #endif // ZEUSHTTP_H

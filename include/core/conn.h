@@ -7,6 +7,9 @@
 
 #include <stddef.h>
 
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 
 #define MAX_RESPONSE_BUFFER 4096
 
@@ -30,7 +33,11 @@ typedef struct zeus_conn {
     
     char response_buffer[MAX_RESPONSE_BUFFER];
     size_t response_len;
+    size_t write_offset;
 
+    SSL *ssl_conn;                
+    int handshake_done;             /** 0 = Handshake in progress, 1 = ready for R/W */
+    int is_ssl;
 
     zeus_request_t req;
     zeus_response_t res;

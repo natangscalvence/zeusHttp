@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -g
-LDFLAGS = -lrt
+LDFLAGS = -lrt -lssl -lcrypto
 
 INCLUDE_DIR = include
 SRC_DIR = src
@@ -10,8 +10,6 @@ CORE_INCLUDE_DIR = $(INCLUDE_DIR)/core/
 HTTP_INCLUDE_DIR = $(INCLUDE_DIR)/http/
 HTTP_FILE_DIR = $(HTTP_DIR)
 SECURITY_DIR = src/security
-
-
 
 
 TARGET = zeushttp
@@ -24,6 +22,8 @@ OBJS = \
 	$(HTTP_DIR)/response.o \
 	$(HTTP_FILE_DIR)/file.o \
 	$(SECURITY_DIR)/privileges.o \
+	$(SECURITY_DIR)/tls.o \
+	$(SECURITY_DIR)/ssl_handler.o \
 	$(SRC_DIR)/main.o
 
 $(TARGET): $(OBJS)
@@ -51,6 +51,12 @@ $(HTTP_FILE_DIR)/file.o: $(HTTP_FILE_DIR)/file.c $(INCLUDE_DIR)/zeushttp.h $(COR
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(SECURITY_DIR)/privileges.o: $(SECURITY_DIR)/privileges.c $(INCLUDE_DIR)/zeushttp.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(SECURITY_DIR)/tls.o: $(SECURITY_DIR)/tls.c $(INCLUDE_DIR)/zeushttp.h $(CORE_INCLUDE_DIR)/server.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(SECURITY_DIR)/ssl_handler.o: $(SECURITY_DIR)/ssl_handler.c $(INCLUDE_DIR)/zeushttp.h $(CORE_INCLUDE_DIR)/conn.h $(CORE_INCLUDE_DIR)/io_event.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 .PHONY: clean

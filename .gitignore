@@ -3,6 +3,8 @@
 *.so
 *.exe
 *.out
+*.key
+*.pem
 
 # The compiled binary
 zeushttp

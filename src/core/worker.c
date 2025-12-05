@@ -42,8 +42,15 @@ static pid_t worker_spawn(zeus_server_t *server, int worker_id) {
         /**
          * Run the main event loop (blocking call).
          */
-        worker_process_run(server);
-        exit(EXIT_SUCCESS);
+
+        int rc = worker_process_run(server);
+        if (rc == 0) {
+            printf("Worker %d (PID %d) exiting normally.\n", worker_id, getpid());
+            _exit(EXIT_SUCCESS);
+        } else {
+            fprintf(stderr, "Worker %d (PID %d) exiting with error (rc=%d).\n", worker_id, getpid(), rc);
+            _exit(EXIT_FAILURE);
+        }
     }
     return pid;
 }

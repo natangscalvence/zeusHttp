@@ -1,6 +1,8 @@
 #include "../include/zeushttp.h"
 #include <stdio.h>
 
+extern int tls_context_init(zeus_server_t *server, const char *cert_file, const char *key_file);
+
 /**
  * Handler for static files.
  */
@@ -24,9 +26,14 @@ void home_handler(zeus_request_t *req, zeus_response_t *res) {
  */
 
 int main() {
-    zeus_server_t *server = zeus_server_init("127.0.0.1", 8080);
+    zeus_server_t *server = zeus_server_init("127.0.0.1", 8443);
     if (!server) {
         fprintf(stderr, "Failed to initialize server.\n");
+        return 1;
+    }
+
+    if (tls_context_init(server, "server.pem", "server.key") != 0) {
+        fprintf(stderr, "Fatal: TLS initialization failed. Aborting\n");
         return 1;
     }
 
