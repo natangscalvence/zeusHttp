@@ -18,6 +18,7 @@ OBJS = \
 	$(CORE_DIR)/event_loop.o \
 	$(CORE_DIR)/worker.o \
 	$(CORE_DIR)/log.o \
+	$(CORE_DIR)/worker_signals.o \
 	$(HTTP_DIR)/http_parser.o \
 	$(HTTP_DIR)/router.o \
 	$(HTTP_DIR)/response.o \
@@ -37,6 +38,9 @@ $(CORE_DIR)/worker.o: $(CORE_DIR)/worker.c $(INCLUDE_DIR)/zeushttp.h $(CORE_INCL
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(CORE_DIR)/log.o: $(CORE_DIR)/log.c $(CORE_INCLUDE_DIR)/log.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(CORE_DIR)/worker_signals.o: $(CORE_DIR)/worker_signals.c $(CORE_INCLUDE_DIR)/worker_signals.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(SRC_DIR)/main.o: $(SRC_DIR)/main.c $(INCLUDE_DIR)/zeushttp.h

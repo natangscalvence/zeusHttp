@@ -3,6 +3,7 @@
 #include "../../include/core/conn.h"
 #include "../../include/core/server.h"
 #include "../../include/core/io_event.h"
+#include "../../include/core/worker_signals.h"
 #include "../../include/core/log.h"
 
 #include <stdio.h>
@@ -12,6 +13,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 #include <errno.h>
 #ifdef __linux__
@@ -79,14 +81,22 @@ int zeus_worker_loop(zeus_server_t *server) {
      * Register the inherited listen socket (FD is already valid and non-blocking).
      */
 
-    static zeus_io_event_t listen_event;
-    listen_event.fd = server->listen_fd;
-    listen_event.data = server;
-    listen_event.read_cb = accept_connection_cb;
-    listen_event.write_cb = NULL;
+    zeus_io_event_t *listen_event = calloc(1, sizeof(*listen_event));
 
-    if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
+    if (!listen_event) {
+        ZLOG_PERROR("calloc listen_event failed");
+        close(server->loop_fd);
+        return -1;
+    }
+    
+    listen_event->fd = server->listen_fd;
+    listen_event->data = server;
+    listen_event->read_cb = accept_connection_cb;
+    listen_event->write_cb = NULL;
+
+    if (zeus_event_ctl(server, listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
         ZLOG_PERROR("Worker fatal: epoll_ctl listen_fd failed");
+        free(listen_event);
         close(server->loop_fd);
         return -1;
     }
@@ -97,12 +107,22 @@ int zeus_worker_loop(zeus_server_t *server) {
      * Blocking I/O loop.
      */
 
-    struct epoll_event events[ZEUS_MAX_EVENTS];
+    struct epoll_event *events = calloc(ZEUS_MAX_EVENTS, sizeof(*events));
 
-    while (1) {
+    if (!events) {
+        ZLOG_PERROR("calloc events failed");
+        free(listen_event);
+        close(server->loop_fd);
+        return -1;
+    }
+
+    while (!shutdown_requested) {
         int n_fds = epoll_wait(server->loop_fd, events, ZEUS_MAX_EVENTS, -1);
         if (n_fds < 0) {
             if (errno == EINTR) {
+                if (shutdown_requested) {
+                    break;
+                }
                 continue;
             }
             ZLOG_PERROR("epoll_wait fatal error");
@@ -122,19 +142,21 @@ int zeus_worker_loop(zeus_server_t *server) {
                 continue;
             }
 
-            if (events[i].events & EPOLLIN) {
-                if (ev->read_cb) {
-                    ev->read_cb(ev);
-                }
+            if ((events[i].events & EPOLLIN) && ev->read_cb) {
+                ev->read_cb(ev);
             }
 
-            if (events[i].events & EPOLLOUT) {
-                if (ev->write_cb) {
-                    ev->write_cb(ev);
-                }
+            if ((events[i].events & EPOLLOUT) && ev->write_cb) {
+                ev->write_cb(ev);
+            }
+
+            if (shutdown_requested) {
+                break;
             }
         }
     }
+
+    free(events);
 
     /**
      * Cleanup on exit from loop 
@@ -145,7 +167,7 @@ int zeus_worker_loop(zeus_server_t *server) {
         server->loop_fd = -1;
     }
 
-    return -1;  /** Indicate worker loop terminated unexpectedly */
+    return 0;
 }
 
 /**
@@ -183,7 +205,14 @@ static void accept_connection_cb(zeus_io_event_t *ev) {
     while (1) {
         addr_len = sizeof(client_addr); /* reset for each accept() */
         conn_fd = accept(server->listen_fd, (struct sockaddr *)&client_addr, &addr_len);
-        if (conn_fd <= 0) break;
+        if (conn_fd == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            } else {
+                ZLOG_PERROR("Accept error");
+                break;
+            }
+        }
 
         if (set_nonblocking(conn_fd) == -1) {
             close(conn_fd);
@@ -527,8 +556,6 @@ void close_connection(zeus_conn_t *conn) {
 
     if (geteuid() == 0 && zeus_drop_privileges() < 0) {
         ZLOG_FATAL("Fatal: Cannot drop privileges. Aborting.\n");
-        close(server->listen_fd);
-        free(server);
         return NULL;
     }
     
@@ -545,9 +572,6 @@ void close_connection(zeus_conn_t *conn) {
 
     if (zeus_event_ctl(server, &listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
         ZLOG_PERROR("epoll_ctl listen_fd failed");
-        close(server->loop_fd);
-        close(server->listen_fd);
-        free(server);
         return NULL;
     }
     */
