@@ -2,7 +2,8 @@
 #define ZEUS_CONN_H
 
 #include "../zeushttp.h"
-#include "../http/http.h" 
+#include "../http/http.h"
+#include "../config/config.h"  
 #include "io_event.h"
 
 #include <stddef.h>
@@ -41,6 +42,8 @@ typedef struct zeus_conn {
 
     zeus_request_t req;
     zeus_response_t res;
+
+    zeus_config_t config;
 } zeus_conn_t;
 
 

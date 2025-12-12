@@ -9,6 +9,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../include/config/config.h"
+
 /**
  * Main server structure (contains the event loop and listening socket).
  */
@@ -47,7 +49,7 @@ typedef void (*zeus_handler_cb)(zeus_request_t *req, zeus_response_t *res);
  * Initializes the ZeusHTTP server and allocates resources.
  */
 
-zeus_server_t* zeus_server_init(const char *host, int port);
+zeus_server_t* zeus_server_init(zeus_config_t *config);
 
 /**
  * Registers a handler function for a specific URI path.

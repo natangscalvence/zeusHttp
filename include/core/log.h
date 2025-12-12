@@ -37,5 +37,7 @@ void zeus_log(log_level_t level, const char *file, int line, const char *fmt, ..
 #define ZLOG_INFO(fmt, ...)  zeus_log(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 #define ZLOG_ERROR(fmt, ...) zeus_log(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 #define ZLOG_FATAL(fmt, ...) zeus_log(LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define ZLOG_WARN(fmt, ...) zeus_log(LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+
 
 #endif // ZEUS_LOG_H

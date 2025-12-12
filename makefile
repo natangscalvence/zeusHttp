@@ -5,6 +5,8 @@ LDFLAGS = -lrt -lssl -lcrypto
 INCLUDE_DIR = include
 SRC_DIR = src
 CORE_DIR = src/core
+CONFIG_DIR = src/config
+CONFIG_INCLUDE_DIR = $(INCLUDE_DIR)/config/
 HTTP_DIR = src/http
 CORE_INCLUDE_DIR = $(INCLUDE_DIR)/core/
 HTTP_INCLUDE_DIR = $(INCLUDE_DIR)/http/
@@ -19,6 +21,7 @@ OBJS = \
 	$(CORE_DIR)/worker.o \
 	$(CORE_DIR)/log.o \
 	$(CORE_DIR)/worker_signals.o \
+	$(CONFIG_DIR)/config.o \
 	$(HTTP_DIR)/http_parser.o \
 	$(HTTP_DIR)/router.o \
 	$(HTTP_DIR)/response.o \
@@ -41,6 +44,9 @@ $(CORE_DIR)/log.o: $(CORE_DIR)/log.c $(CORE_INCLUDE_DIR)/log.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(CORE_DIR)/worker_signals.o: $(CORE_DIR)/worker_signals.c $(CORE_INCLUDE_DIR)/worker_signals.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(CONFIG_DIR)/config.o: $(CONFIG_DIR)/config.c $(CONFIG_INCLUDE_DIR)/config.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(SRC_DIR)/main.o: $(SRC_DIR)/main.c $(INCLUDE_DIR)/zeushttp.h

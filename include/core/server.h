@@ -23,6 +23,7 @@ typedef struct zeus_server zeus_server_t;
 struct zeus_server {
     int listen_fd;      /** The file descriptor for the listeing socket. */
     int loop_fd;        /** The file descriptor for the epoll/kqueue instance. */
+    zeus_config_t config;   /** All server configuration */
     SSL_CTX *ssl_ctx;   /** The global TLS context (shared among worker.) */
 };
 

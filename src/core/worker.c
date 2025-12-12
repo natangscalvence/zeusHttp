@@ -12,6 +12,7 @@
 #include "../../include/core/server.h"
 #include "../../include/core/worker_signals.h"
 #include "../../include/core/log.h"
+#include "../../include/config/config.h" 
 #include <signal.h> 
 #include <stdio.h>
 #include <string.h>
@@ -24,6 +25,9 @@
 extern int worker_main_loop(zeus_server_t *server);
 extern int zeus_worker_loop(zeus_server_t *server);
 extern int zeus_drop_privileges();
+
+static void master_reload_workers(zeus_server_t *server);
+
 
 
 /**
@@ -116,6 +120,8 @@ static void master_init_signals() {
 static void master_reload_workers(zeus_server_t *server) {
     ZLOG_INFO("Master: Starting graceful reload cycle.\n");
 
+    const int new_num_workers = server->config.num_workers;
+
     /**
      * Signal all currently running workers to stop accepting 
      * new connections.
@@ -144,6 +150,8 @@ static void master_reload_workers(zeus_server_t *server) {
             }
         }
     }
+
+    Num_Workers = new_num_workers;
 }
 
 
@@ -153,23 +161,23 @@ static void master_reload_workers(zeus_server_t *server) {
  * Main master loop for starting and monitoring workers.
  */
 
-int worker_master_start(zeus_server_t *server, int num_workers) {
-    Num_Workers = num_workers;
+int worker_master_start(zeus_server_t *server) {
+    Num_Workers = server->config.num_workers;
 
-    Workers = calloc(num_workers, sizeof(zeus_worker_t));
+    Workers = calloc(server->config.num_workers, sizeof(zeus_worker_t));
     if (!Workers) {
         ZLOG_FATAL("Master: Cannot allocate workers array.");
         return -1;
     }
 
     master_init_signals();
-    ZLOG_INFO("Master (PID %d) starting %d workers.\n", getpid(), num_workers);
+    ZLOG_INFO("Master (PID %d) starting %d workers.\n", getpid(), server->config.num_workers);
 
     /**
      * Initial spawn of workers.
      */
 
-    for (int i = 0; i < num_workers; i++) {
+    for (int i = 0; i < server->config.num_workers; i++) {
         Workers[i].pid = worker_spawn(server, i);
         if (Workers[i].pid > 0) {
             Workers[i].status = WORKER_STATUS_RUNNING;
@@ -261,11 +269,13 @@ int worker_master_start(zeus_server_t *server, int num_workers) {
         }
     }
     ZLOG_INFO("Master: All workers terminated. Exiting.\n");
+    return 0;
 }
 
 /**
  * The main function executed by the worker process.
  */
+
 int worker_process_run(zeus_server_t *server) {
     ZLOG_INFO("Worker (PID %d) entering event loop. Inherti listen_fd=%d", getpid(), server->listen_fd);
     

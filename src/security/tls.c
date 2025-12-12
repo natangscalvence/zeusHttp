@@ -5,9 +5,31 @@
 
 #include "../../include/zeushttp.h"
 #include "../../include/core/server.h"
+#include "../../include/core/log.h"
 #include <stdio.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+
+static const unsigned char ALPN_SERVER_PROTOS[] = "\x02h2\x08http/1.1";
+static const unsigned int ALPN_SERVER_PROTOS_LEN = sizeof(ALPN_SERVER_PROTOS) - 1;
+
+/**
+ * Select the ALPN protocol comparing the list offered by the client (in)
+ * with the list of server.
+ */
+
+static int alpn_select_cb(SSL *ssl, unsigned char **out, 
+    unsigned char *outlen, const unsigned char *in, unsigned int inlen, void *arg) {
+
+    int status = SSL_select_next_proto((unsigned char **)out, outlen,
+        ALPN_SERVER_PROTOS, ALPN_SERVER_PROTOS_LEN, in, inlen);
+
+    if (status != OPENSSL_NPN_NEGOTIATED) {
+        return SSL_TLSEXT_ERR_NOACK;
+    }
+
+    return SSL_TLSEXT_ERR_OK;
+}
 
 int tls_context_init(zeus_server_t *server, const char *cert_file, const char *key_file) {
     SSL_library_init();
@@ -56,19 +78,15 @@ int tls_context_init(zeus_server_t *server, const char *cert_file, const char *k
         return -1;
     }
 
-    /**
-     * ALPN Configuration.
-     * Define the protocols supported by the server: h2 and http/1.1
-     */
-    const unsigned char alpn_protos[] = "\x02h2\x08http/1.1";
-
-    if (SSL_CTX_set_alpn_protos(server->ssl_ctx, alpn_protos, sizeof(alpn_protos) - 1) != 0) {
+    if (SSL_CTX_set_alpn_protos(server->ssl_ctx, ALPN_SERVER_PROTOS, ALPN_SERVER_PROTOS_LEN) != 0) {
         fprintf(stderr, "TLS Error: Failed to set ALPN protocols.\n");
         SSL_CTX_free(server->ssl_ctx);
         return -1;
     }
 
-    printf("TLS: ALPN Configured (h2, http/1.1).\n");
-    printf("TLS: SSL Context successfully initialized.\n");
+    SSL_CTX_set_alpn_select_cb(server->ssl_ctx, alpn_select_cb, NULL);
+
+    ZLOG_INFO("TLS: ALPN configured (h2, http/1.1) and callback registered.");
+    ZLOG_INFO("TLS: SSL Context successfully initialized.");
     return 0;
 }

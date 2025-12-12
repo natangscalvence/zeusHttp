@@ -9,6 +9,8 @@
 #include "../zeushttp.h"
 #include <sys/types.h>
 
+#define MAX_NUM_WORKERS 128
+
 /**
  * Status codes for the worker process.
  */
@@ -33,7 +35,7 @@ typedef struct zeus_worker {
  * Starts the main master loop, which spawns and manages workers.
  */
 
-int worker_master_start(zeus_server_t *server, int num_workers);
+int worker_master_start(zeus_server_t *server);
 
 /**
  * Runs the event loop specific to a single worker process.

@@ -489,11 +489,16 @@ void close_connection(zeus_conn_t *conn) {
   * Initializes the server, creates epoll instance, and binds the socket.
   */
 
- zeus_server_t* zeus_server_init(const char *host, int port) {
+ zeus_server_t* zeus_server_init(zeus_config_t *config) {
+    const char *host = config->bind_host;
+    const uint16_t port = config->bind_port;
+
     zeus_server_t *server = calloc(1, sizeof(zeus_server_t));
     if (!server) {
         return NULL;
     }
+
+    server->config = *config;
 
     /**
      * Create Socket (using SOCK_NONBLOCK for asynchronous I/O)
