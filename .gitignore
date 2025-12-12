@@ -5,6 +5,7 @@
 *.out
 *.key
 *.pem
+*.conf
 
 # The compiled binary
 zeushttp
