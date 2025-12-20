@@ -11,10 +11,18 @@
 
 #include "../include/config/config.h"
 
+#define MAX_HEADERS 32
+
+typedef struct {
+    char *name;
+    char *value;
+} http_header_t;
+
 /**
  * Main server structure (contains the event loop and listening socket).
  */
 
+typedef struct zeus_conn zeus_conn_t;
 typedef struct zeus_server zeus_server_t;
 
 /**
@@ -22,8 +30,12 @@ typedef struct zeus_server zeus_server_t;
  */
 
 typedef struct zeus_request {
-    const char *method;     /** HTTP method (e.g., "GET"). */
-    const char *path;       /** Decoded request URI path. */
+    char *method;     /** HTTP method (e.g., "GET"). */
+    char *path;       /** Decoded request URI path. */
+    char *version;     
+
+    http_header_t headers[MAX_HEADERS];
+    size_t num_headers;
 } zeus_request_t;
 
 /**
@@ -42,7 +54,7 @@ typedef struct zeus_response {
  * User-defined callback for handling HTTP requests.
  */
 
-typedef void (*zeus_handler_cb)(zeus_request_t *req, zeus_response_t *res);
+typedef void (*zeus_handler_cb)(zeus_conn_t *conn, zeus_request_t *req);
 
 
 /**

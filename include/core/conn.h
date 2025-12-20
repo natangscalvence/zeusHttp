@@ -32,6 +32,12 @@ typedef struct zeus_conn {
     size_t buffer_used;
     char *parse_cursor;             /** Current position in read_buffer for parsing. */
     
+
+    volatile int fd;
+    volatile int refcount;
+    volatile int closing;
+    volatile int ready_to_free;
+
     char response_buffer[MAX_RESPONSE_BUFFER];
     size_t response_len;
     size_t write_offset;
@@ -43,7 +49,10 @@ typedef struct zeus_conn {
     zeus_request_t req;
     zeus_response_t res;
 
-    zeus_config_t config;
+    int sendfile_fd;                /** File descriptor of file to be sended. */
+    size_t sendfile_size;           /** Total size of file */
+    off_t sendfile_offset;          /** File offset */
+    int is_sending_file;            /** Flag to distinguish between buffered and senfile I/O */
 } zeus_conn_t;
 
 

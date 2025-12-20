@@ -29,24 +29,23 @@ extern int zeus_handle_ssl_handshake(zeus_conn_t *conn);
 extern void handle_write_cb(zeus_io_event_t *ev);
 extern int zeus_drop_privileges();
 
-
 /**
  * Security limits, adjustable.
  */
 
- #define MAX_HEADERS_LEN 8192       /** 8 KB total for all headers. */
- #define MAX_HEADERS 100            /** 100 headers maximum. */
+#define MAX_HEADERS_LEN 8192       /** 8 KB total for all headers. */
+#define MAX_HEADERS 100            /** 100 headers maximum. */
 
 
  /**
   * Forward declarations for callback.
   */
 
-  int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t events);
-  static void accept_connection_cb(zeus_io_event_t *ev);
-  static void handle_read_cb(zeus_io_event_t *ev);
-  static void parse_http_request(zeus_conn_t *conn);
-  void close_connection(zeus_conn_t *conn);
+int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t events);
+static void accept_connection_cb(zeus_io_event_t *ev);
+static void handle_read_cb(zeus_io_event_t *ev);
+int http_process_read_buffer(zeus_conn_t *conn);
+void close_connection(zeus_conn_t *conn);
 
   /**
    * Sets a file descriptor to non-blocking mode.
@@ -61,113 +60,101 @@ static int set_nonblocking(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+static void zeus_dispatch_event(zeus_server_t *server, struct epoll_event *ee) {
+    zeus_io_event_t *ev = (zeus_io_event_t *)ee->data.ptr;
+    if (!ev) return;
+
+    // Caso especial: Novo cliente tentando conectar
+    if (ev->fd == server->listen_fd) {
+        if ((ee->events & EPOLLIN) && ev->read_cb) {
+            ev->read_cb(ev);
+        }
+        return;
+    }
+
+    // Caso Geral: Eventos em conexões existentes
+    zeus_conn_t *conn = (zeus_conn_t *)ev->data;
+    if (!conn) return;
+
+    // PROTEÇÃO: Mantém a conexão viva durante a execução dos callbacks
+    conn_ref(conn);
+
+    /* Tratamento de LEITURA */
+    if ((ee->events & EPOLLIN) && ev->read_cb && !conn->closing) {
+        ev->read_cb(ev);
+    }
+
+    /* Tratamento de ESCRITA 
+     * Verificamos closing novamente, pois o read_cb anterior pode ter fechado a conexão */
+    if (!conn->closing && (ee->events & EPOLLOUT) && ev->write_cb) {
+        ev->write_cb(ev);
+        // Para SSL, garantimos que o handshake terminou antes de disparar write_cb de aplicação
+        if (!conn->is_ssl || (conn->is_ssl && conn->handshake_done)) {
+            ev->write_cb(ev);
+        }
+    }
+
+    // FINALIZAÇÃO: Libera a referência deste ciclo. Se o refcount atingir 0, o free(conn) ocorre aqui.
+    conn_unref(conn);
+}
+
 /**
- * Executes the blocking event loop for a single worker process.
+ * @brief Loop principal do Worker Process.
  */
-
 int zeus_worker_loop(zeus_server_t *server) {
-
-    /**
-     * Create epoll instance.
-     */
+    struct epoll_event *events = NULL;
+    zeus_io_event_t *listen_ev = NULL;
 
     server->loop_fd = epoll_create1(0);
     if (server->loop_fd < 0) {
-        ZLOG_PERROR("Worker fatal: epoll_create1 failed.");
+        ZLOG_PERROR("Worker fatal: epoll_create1 failed");
         return -1;
     }
 
-    /**
-     * Register the inherited listen socket (FD is already valid and non-blocking).
-     */
+    // Configuração do evento de escuta herdado
+    listen_ev = calloc(1, sizeof(*listen_ev));
+    if (!listen_ev) goto fatal;
 
-    zeus_io_event_t *listen_event = calloc(1, sizeof(*listen_event));
+    listen_ev->fd      = server->listen_fd;
+    listen_ev->data    = server;
+    listen_ev->read_cb = accept_connection_cb;
 
-    if (!listen_event) {
-        ZLOG_PERROR("calloc listen_event failed");
-        close(server->loop_fd);
-        return -1;
-    }
-    
-    listen_event->fd = server->listen_fd;
-    listen_event->data = server;
-    listen_event->read_cb = accept_connection_cb;
-    listen_event->write_cb = NULL;
-
-    if (zeus_event_ctl(server, listen_event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
+    if (zeus_event_ctl(server, listen_ev, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
         ZLOG_PERROR("Worker fatal: epoll_ctl listen_fd failed");
-        free(listen_event);
-        close(server->loop_fd);
-        return -1;
+        goto fatal;
     }
 
-    ZLOG_INFO("Worker (PID %d) is ready to accept connections.\n", getpid());
+    events = calloc(ZEUS_MAX_EVENTS, sizeof(struct epoll_event));
+    if (!events) goto fatal;
 
-    /**
-     * Blocking I/O loop.
-     */
-
-    struct epoll_event *events = calloc(ZEUS_MAX_EVENTS, sizeof(*events));
-
-    if (!events) {
-        ZLOG_PERROR("calloc events failed");
-        free(listen_event);
-        close(server->loop_fd);
-        return -1;
-    }
+    ZLOG_INFO("Worker (PID %d) ready. listen_fd=%d", getpid(), server->listen_fd);
 
     while (!shutdown_requested) {
         int n_fds = epoll_wait(server->loop_fd, events, ZEUS_MAX_EVENTS, -1);
+        
         if (n_fds < 0) {
-            if (errno == EINTR) {
-                if (shutdown_requested) {
-                    break;
-                }
-                continue;
-            }
+            if (errno == EINTR) continue;
             ZLOG_PERROR("epoll_wait fatal error");
-            break;  /** Break outer while, then clean up below */
+            break;
         }
 
         for (int i = 0; i < n_fds; i++) {
-            zeus_io_event_t *ev = events[i].data.ptr;
-
-            if (!ev) {
-
-                /** 
-                 * Defensive logging 
-                 */
-
-                fprintf(stderr, "Worker (PID %d) got NULL event.ptr\n", getpid());
-                continue;
-            }
-
-            if ((events[i].events & EPOLLIN) && ev->read_cb) {
-                ev->read_cb(ev);
-            }
-
-            if ((events[i].events & EPOLLOUT) && ev->write_cb) {
-                ev->write_cb(ev);
-            }
-
-            if (shutdown_requested) {
-                break;
-            }
+            zeus_dispatch_event(server, &events[i]);
+            if (shutdown_requested) break;
         }
     }
 
+    // Cleanup
     free(events);
-
-    /**
-     * Cleanup on exit from loop 
-     */
-    
-    if (server->loop_fd >= 0) {
-        close(server->loop_fd);
-        server->loop_fd = -1;
-    }
-
+    free(listen_ev);
+    if (server->loop_fd >= 0) close(server->loop_fd);
     return 0;
+
+fatal:
+    if (listen_ev) free(listen_ev);
+    if (events) free(events);
+    if (server->loop_fd >= 0) close(server->loop_fd);
+    return -1;
 }
 
 /**
@@ -194,24 +181,16 @@ int zeus_event_ctl(zeus_server_t *server, zeus_io_event_t *ev, int op, uint32_t 
 
 static void accept_connection_cb(zeus_io_event_t *ev) {
     zeus_server_t *server = (zeus_server_t *)ev->data;
-    struct sockaddr_in client_addr;
-    socklen_t addr_len;
-    int conn_fd;
-
-    /**
-     * Loop to accept all pending connections (edge-triggered behavior safety)
-     */
-
+    
     while (1) {
-        addr_len = sizeof(client_addr); /* reset for each accept() */
-        conn_fd = accept(server->listen_fd, (struct sockaddr *)&client_addr, &addr_len);
+        struct sockaddr_in client_addr;
+        socklen_t addr_len = sizeof(client_addr);
+        int conn_fd = accept(server->listen_fd, (struct sockaddr *)&client_addr, &addr_len);
+        
         if (conn_fd == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                break;
-            } else {
-                ZLOG_PERROR("Accept error");
-                break;
-            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            ZLOG_PERROR("Accept error");
+            break;
         }
 
         if (set_nonblocking(conn_fd) == -1) {
@@ -219,50 +198,35 @@ static void accept_connection_cb(zeus_io_event_t *ev) {
             continue;
         }
 
-        /**
-         * Allocate and initialize the connection structure.
-         */
-
         zeus_conn_t *conn = calloc(1, sizeof(zeus_conn_t));
         if (!conn) {
             close(conn_fd);
             continue;
         }
 
+        // INICIALIZAÇÃO DO REFCOUNT
+        conn->refcount = 1; 
         conn->server = server;
         conn->event.fd = conn_fd;
         conn->event.data = conn;
         conn->event.read_cb = handle_read_cb;
         conn->event.write_cb = handle_write_cb;
 
-        /**
-         * Initialize the SSL object and handshake.
-         */
-
         conn->ssl_conn = SSL_new(server->ssl_ctx);
         if (!conn->ssl_conn) {
-            ZLOG_PERROR("SSL_new failed");
             close_connection(conn);
             continue;
         }
 
         SSL_set_fd(conn->ssl_conn, conn_fd);
         SSL_set_accept_state(conn->ssl_conn);
-
         conn->is_ssl = 1;
-        conn->handshake_done = 0;
 
         if (zeus_event_ctl(server, &conn->event, EPOLL_CTL_ADD, EPOLLIN | EPOLLET) == -1) {
-            ZLOG_PERROR("epoll_ctl new conn failed.");
-            close_connection(conn);     /** safe cleanup */
+            close_connection(conn);
             continue;
         }
-
-        ZLOG_INFO("New connection accepted: FD %d (handshake started).\n", conn_fd);
-    }
-
-    if (conn_fd == -1 && errno != EWOULDBLOCK && errno != EAGAIN) {
-        ZLOG_PERROR("Accept error");
+        ZLOG_INFO("New connection: FD %d", conn_fd);
     }
 }
 
@@ -273,223 +237,227 @@ static void accept_connection_cb(zeus_io_event_t *ev) {
  */
 
 static void handle_read_cb(zeus_io_event_t *ev) {
-    zeus_conn_t *conn = (zeus_conn_t *)ev->data;
+    zeus_conn_t *conn = ev->data;
+    int should_close = 0;
+
+    conn_ref(conn);
+
+    if (conn->closing) {
+        goto out;
+    }
 
     /**
-     * Manage TLS handshake continuation.
+     * TLS handshake continuation
      */
-
     if (conn->is_ssl && !conn->handshake_done) {
-        int hs_result = zeus_handle_ssl_handshake(conn);
-        if (hs_result < 0) {
-            return;         /** Handshake failed. Connection closed internally. */
+        int hs = zeus_handle_ssl_handshake(conn);
+
+        if (hs < 0) {
+            should_close = 1;
+            goto out;
         }
 
-        if (hs_result == 0) {
-            return;         /** Waiting for the next event. */
+        if (hs == 0) {
+            goto out; /* handshake incomplete */
         }
     }
 
     /**
-     * Determine the read function based on connection type.
+     * Read loop (edge-triggered safe)
      */
-
-    ssize_t (*read_func)(int, void*, size_t) = read;
-    if (conn->is_ssl && conn->handshake_done) {
-        read_func = (ssize_t (*)(int, void*, size_t))SSL_read;
-    }
-    ssize_t bytes_received = 0;
-    int error = 0;
-
     while (conn->buffer_used < sizeof(conn->read_buffer) - 1) {
-        size_t space_available = sizeof(conn->read_buffer) - conn->buffer_used - 1;
+        size_t space = sizeof(conn->read_buffer) - conn->buffer_used - 1;
+        ssize_t n;
 
         if (conn->is_ssl && conn->handshake_done) {
-            /**
-             * Read encrypted data.
-             */
-            bytes_received = SSL_read(conn->ssl_conn, conn->read_buffer + conn->buffer_used, space_available);
+            n = SSL_read(conn->ssl_conn,
+                         conn->read_buffer + conn->buffer_used,
+                         space);
         } else {
-            /**
-             * Read plaintext data.
-             */
-             bytes_received = read(conn->event.fd, conn->read_buffer + conn->buffer_used, space_available);
+            n = read(conn->event.fd,
+                     conn->read_buffer + conn->buffer_used,
+                     space);
         }
 
-        if (bytes_received > 0) {
-            conn->buffer_used += (size_t)bytes_received;
+        if (n > 0) {
+            conn->buffer_used += (size_t)n;
             conn->read_buffer[conn->buffer_used] = '\0';
 
-            /**
-             * Pass the control to the state machine.
-             */
+            http_parser_run(conn);
 
-             http_parser_run(conn);
-
-             /**
-              * If parsing finished or errored, stop reading.
-              */
-
-            if (conn->parser_state >= PS_COMPLETED || conn->parser_state == PS_ERROR) {
-                return;
+            if (conn->parser_state == PS_ERROR) {
+                should_close = 1;
+                break;
             }
-        } else if (bytes_received == 0) {
-            /**
-             * Graceful shutdown (closed by client).
-             */
 
-            ZLOG_INFO("Connection closed by client: FD %d\n", conn->event.fd);
-            close_connection(conn);
-            return;
-        } else {
-            if (conn->is_ssl && conn->handshake_done) {
-                error = SSL_get_error(conn->ssl_conn, bytes_received);
-                if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
-                    return;     /** Socket exhaustion or need writing. */
-                }
-                ERR_print_errors_fp(stderr);
-            } else {
-                if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                    return;     /** Socket exhausted :p */
-                }
-                ZLOG_PERROR("read error");
-            }
-            
-            close_connection(conn);
-            return;
+            continue;
         }
+
+        if (n == 0) {
+            /* Client closed connection */
+            should_close = 1;
+            break;
+        }
+
+        /* n < 0 */
+        if (conn->is_ssl && conn->handshake_done) {
+            int ssl_err = SSL_get_error(conn->ssl_conn, n);
+            if (ssl_err == SSL_ERROR_WANT_READ ||
+                ssl_err == SSL_ERROR_WANT_WRITE) {
+                break;
+            }
+            ERR_print_errors_fp(stderr);
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+            ZLOG_PERROR("read error");
+        }
+
+        should_close = 1;
+        break;
     }
 
     /**
-     * Just a security check.
+     * Security: buffer overflow protection
      */
+    if (conn->buffer_used >= sizeof(conn->read_buffer) - 1) {
+        ZLOG_WARN("Security: read buffer limit reached (fd=%d)",
+                  conn->event.fd);
+        should_close = 1;
+    }
 
-     if (conn->buffer_used >= sizeof(conn->read_buffer) - 1) {
-        ZLOG_INFO("Security: Buffer limit reached on FD %d\n", conn->event.fd);
+out:
+    if (should_close) {
         close_connection(conn);
     }
-}
 
+    conn_unref(conn);
+}
 
 
 
 /**
  * The core HTTP State Machine. Parses the request incrementally.
  */
-static void parse_http_request(zeus_conn_t *conn) {
+
+int http_process_read_buffer(zeus_conn_t *conn) {
     char *buffer = conn->read_buffer;
     size_t len = conn->buffer_used;
     char *end_of_headers = NULL;
 
     /**
-     * Look for "\r\n\r\n" which signifiers the end of headers.
+     * Lookup for header terminator.
      */
-
+    
     end_of_headers = strstr(buffer, "\r\n\r\n");
+
+    /**
+     * Waiting for headers.
+     */
 
     if (conn->parser_state <= PS_HEADERS_FINISHED) {
         if (!end_of_headers) {
-            /**
-             * Check security limit early: if we read MAX_HEADER_LEN bytes and haven't
-             * found the end of headers, it's an attack of malformed request.
-             */
-            if (len > MAX_HEADERS_LEN) {
-                ZLOG_INFO("Security Limit: Headers too long.\n");
+            
+            if (len > MAX_HEADERS_LEN) {            /** Security limits... */
+                ZLOG_INFO("Security Limit: Headers too long. FD %d", conn->event.fd);
                 conn->parser_state = PS_ERROR;
-                /**
-                 * TODO: 431 response.
-                 */
-                return;
+                close_connection(conn); 
+                return -1;
             }
-            /**
-             * Need more data.
-             */
+            
             conn->parser_state = PS_HEADERS;
-            return;
+            return 0; 
+        }
+        
+        /** 
+         * Calls parser from initia line to fill up conn->req.
+         */
+
+        if (parse_http_request(conn, &conn->req) < 0) {
+            ZLOG_WARN("HTTP Parse: Failed to parse request line or headers. FD %d", conn->event.fd);
+            conn->parser_state = PS_ERROR;
+            close_connection(conn);
+            return -1;
         }
 
-        /**
-         * Headers are finished. Perform actual parsing logic here.
-         * 1 - Parse Start Line (Method, Path, Version).
-         * 2 - Parse All Headers
-         * 3 - Set conn->req->method and conn->req->path
-         */
-        conn->parser_state = PS_HEADERS_FINISHED;
-        ZLOG_INFO("HTTP headers finished processing.\n");
+        ZLOG_INFO("HTTP headers finished processing. FD %d", conn->event.fd);
 
         /**
-         * After processing headers, determine body state (Content-Lenght vs Chunked).
-         * For simplicity we assume PS_COMPLETED immediately after headers for now.
+         * Define the state to completed. (Ready for body but for while - COMPLETED).
          */
 
         conn->parser_state = PS_COMPLETED;
     }
 
     if (conn->parser_state == PS_COMPLETED) {
-        ZLOG_INFO("Request fully parsed. Dispatching handler.\n");
+        ZLOG_INFO("Request fully parsed. Dispatching handler. FD %d", conn->event.fd);
+        router_dispatch(conn); 
+        return 0;
     }
-
-    /**
-     * TODO: Map path to handler function and call it.
-     * For now, call a placeholder handler function.
-     * The real request/response data should be correctly populated
-     * first.
-     */
-
-    router_dispatch(conn);
-
-    close_connection(conn);
+    
+    return 0; 
 }
 
+/**
+ * Macros for reference counting.
+ * This is the best way that i found to prevent UAF.
+ */
+
+inline void conn_ref(zeus_conn_t *c) {
+    __atomic_add_fetch(&c->refcount, 1, __ATOMIC_SEQ_CST);
+}
+
+inline void conn_unref(zeus_conn_t *c) {
+    if (!c) {
+        return;
+    }
+
+    int refs = __atomic_sub_fetch(&c->refcount, 1, __ATOMIC_SEQ_CST);
+
+    if (refs == 0) {
+       free(c);
+    }
+}
 
 /**
  * Cleans up resources and closes the connection.
  */
 
 void close_connection(zeus_conn_t *conn) {
-    if (!conn) return;
+    if (!conn) {
+        return;
+    }
 
-    int fd = conn->event.fd;
-    /* remove from epoll */
+    if (__atomic_exchange_n(&conn->closing, 1, __ATOMIC_SEQ_CST)) {
+        return;
+    }
+
 #ifdef __linux__
     zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_DEL, 0);
 #endif
 
+    conn->event.data = NULL;
+
     if (conn->ssl_conn) {
-        /** 
-         * Attempt non-blocking TLS close_notify exchange 
-         */
-
-        int r = SSL_shutdown(conn->ssl_conn);
-        if (r == 0) {
-
-            /**
-             * peer did not respond yet.
-             * Send FIN to avoid RST.
-             */
-
-            shutdown(fd, SHUT_RDWR);
-            SSL_shutdown(conn->ssl_conn);
-        }
+        SSL_shutdown(conn->ssl_conn);
         SSL_free(conn->ssl_conn);
         conn->ssl_conn = NULL;
-    } else {
-        shutdown(fd, SHUT_RDWR);
     }
 
-    if (fd >= 0) {
-        close(fd);
+    if (conn->event.fd >= 0) {
+        shutdown(conn->event.fd, SHUT_RDWR);
+        close(conn->event.fd);
+        conn->event.fd = -1;
     }
-
-    fprintf(stderr, "Connection FD %d closed.\n", fd);
-    free(conn);
 }
+
 
  /**
   * Initializes the server, creates epoll instance, and binds the socket.
   */
 
- zeus_server_t* zeus_server_init(zeus_config_t *config) {
+zeus_server_t* zeus_server_init(zeus_config_t *config) {
     const char *host = config->bind_host;
     const uint16_t port = config->bind_port;
 
