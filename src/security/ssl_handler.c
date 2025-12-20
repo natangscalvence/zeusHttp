@@ -10,6 +10,8 @@
 #include <openssl/err.h>
 #include <errno.h>
 
+#include <sys/socket.h>
+
 /**
  * TODO: Define kqueue for BSD systems.
  */
@@ -125,6 +127,7 @@ int zeus_handle_ssl_handshake(zeus_conn_t *conn) {
 void handle_write_cb(zeus_io_event_t *ev) {
     if (!ev) return;
     zeus_conn_t *conn = (zeus_conn_t *)ev->data;
+    conn_ref(conn);
     if (!conn) return;
 
     if (!conn->ssl_conn) {
@@ -150,46 +153,27 @@ void handle_write_cb(zeus_io_event_t *ev) {
          */
         return;
     }
-
+    conn_unref(conn);
 }
+
+
 
 /**
  * Initialize a graceful close for TLS connections.
  */
 
 void start_graceful_close(zeus_conn_t *conn) {
-    if (!conn) {
+    if (conn->closing) {
         return;
     }
 
-    if (conn->is_ssl) {
-        int ret = SSL_shutdown(conn->ssl_conn);
+    conn->closing = 1;
 
-        if (ret == 1) {
-            /**
-             * Full shutdown completed, safe to close FD.
-             */
+#ifdef __linux__
+    zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_DEL, 0);
+#endif 
 
-            close_connection(conn);
-            return;
-        }
-
-        int err = SSL_get_error(conn->ssl_conn, ret);
-        if (err == SSL_ERROR_WANT_READ) {
-            zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_MOD, EPOLLIN | EPOLLET);
-            return;
-        }
-
-        if (err == SSL_ERROR_WANT_WRITE) {
-            zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_MOD, EPOLLOUT | EPOLLET);
-            return;
-        }
-
-        ERR_print_errors_fp(stderr);
-        close_connection(conn);
-        return;
-    }
-    /** For non-ssl, close immediatly. */
-    
-    close_connection(conn);
+    shutdown(conn->event.fd, SHUT_RDWR);
+    close(conn->event.fd);
+    conn_unref(conn);
 }
