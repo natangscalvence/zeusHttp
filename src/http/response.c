@@ -4,6 +4,7 @@
  */
 
 #include "../../include/zeushttp.h"
+#include "../../include/core/log.h"
 #include "../../include/core/conn.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +12,10 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <stddef.h> /* For offsetof */
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include <sys/epoll.h>
 
@@ -54,50 +59,44 @@ ssize_t zeus_conn_send(zeus_conn_t *conn, const void *buf, size_t len) {
     }
 }
 
-void handle_response_write_cb(zeus_io_event_t *ev) {
-    if (!ev) {
-        return;
-    }
-
+static void handle_response_write_cb(zeus_io_event_t *ev) {
     zeus_conn_t *conn = (zeus_conn_t *)ev->data;
+    if (!conn) return;
 
-    if (!conn) {
-        return;
-    }
+    conn_ref(conn);
+    
+    ZLOG_DEBUG("Write CB: Offset %zu / Total %zu", conn->write_offset, conn->response_len);
 
-    /**
-     * Send remaining header/body.
-     */
+    while (conn->write_offset < conn->response_len) {
+        ssize_t sent = zeus_conn_send(
+            conn,
+            conn->response_buffer + conn->write_offset,
+            conn->response_len - conn->write_offset
+        );
 
-     while (conn->write_offset < conn->response_len) {
-        ssize_t r = zeus_conn_send(conn, 
-            conn->response_buffer + conn->write_offset, conn->response_len -
-            conn->write_offset);
-
-        if (r > 0) {
-            conn->write_offset += (size_t)r;
+        if (sent > 0) {
+            conn->write_offset += (size_t)sent;
             continue;
-        } else if (r == 0) {
-            if (zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_MOD, EPOLLOUT | EPOLLET) == -1) {
-                perror("epoll_ctl mod (response write) failed");
-                break;
-            }
-            return;
-        } else {
-            start_graceful_close(conn);
+        }
+
+        if (sent == 0) { // SSL_WANT_WRITE ou EAGAIN
+            conn_unref(conn);
             return;
         }
-     }
 
-    /** 
-     * Finished sending everything.
-     */
+        // Erro fatal
+        ZLOG_WARN("Write error on FD %d", conn->event.fd);
+        start_graceful_close(conn);
+        conn_unref(conn);
+        return;
+    }
 
-    conn->write_offset = 0;
-    conn->response_len = 0;
-
-    start_graceful_close(conn);
+    // Se chegou aqui, enviou TUDO.
+    ZLOG_INFO("Response sent fully. Initiating close.");
+    start_graceful_close(conn); 
+    conn_unref(conn);
 }
+
 
 /**
  * Finds the connection structure from the response pointer using
@@ -163,136 +162,100 @@ int zeus_response_add_header(zeus_response_t *res, const char *key, const char *
 
 int zeus_response_send_data(zeus_response_t *res, const char *data, size_t len) {
     zeus_conn_t *conn = get_conn_from_res(res);
-    if (!conn) return -1;
+    if (!conn || !conn->response_buffer) return -1;
 
-    /**
-     * Ensure that buffers exists.
-     */
+    conn_ref(conn);
 
-    if (!conn->response_buffer) {
-        fprintf(stderr, "No response buffer on conn\n");
+    conn->response_len = 0;
+    conn->write_offset = 0;
+
+    /* Status line */
+    int n = snprintf(
+        conn->response_buffer,
+        MAX_RESPONSE_BUFFER,
+        "HTTP/1.1 %u %s\r\n"
+        "Content-Length: %zu\r\n"
+        "\r\n",
+        res->status_code,
+        get_status_message(res->status_code),
+        len
+    );
+
+    if (n <= 0 || (size_t)n >= MAX_RESPONSE_BUFFER) {
+        conn_unref(conn);
         return -1;
     }
 
-    /**
-     * Build Content-Lenght and CRLF safely.
-     */
+    conn->response_len = (size_t)n;
 
-    int remaining = MAX_RESPONSE_BUFFER - (int)conn->response_len;
-    if (remaining <= 0) {
-        fprintf(stderr, "Response buffer has no remaining space\n");
-        return -1;
+    /* Append body */
+    if (len > 0) {
+        if (conn->response_len + len > MAX_RESPONSE_BUFFER) {
+            conn_unref(conn);
+            return -1;
+        }
+
+        memcpy(conn->response_buffer + conn->response_len, data, len);
+        conn->response_len += len;
     }
 
-    int hdr_written = snprintf(conn->response_buffer + conn->response_len,
-                               (size_t)remaining,
-                               "Content-Length: %zu\r\n\r\n", len);
-
-    if (hdr_written < 0 || hdr_written >= remaining) {
-        fprintf(stderr, "Error: Response header buffer overflow (content-length)\n");
-        return -1;
-    }
-    conn->response_len += (size_t)hdr_written;
-
-    char status_line_buf[128];
-    const char *status_msg = get_status_message(res->status_code);
-    int status_line_len = snprintf(status_line_buf, sizeof(status_line_buf),
-                                   "HTTP/1.1 %u %s\r\n", res->status_code, status_msg);
-    if (status_line_len < 0 || status_line_len >= (int)sizeof(status_line_buf)) {
-        fprintf(stderr, "Status line buffer overflow\n");
-        return -1;
-    }
-
-    /** Ensure we have space to prepend status line */
-    if ((size_t)status_line_len + conn->response_len > MAX_RESPONSE_BUFFER) {
-        fprintf(stderr, "Not enough space for status line + headers\n");
-        return -1;
-    }
-
-    /** Shift headers right to make space for status-line (memmove handles overlap) */
-    memmove(conn->response_buffer + status_line_len,
-            conn->response_buffer, conn->response_len);
-
-    memcpy(conn->response_buffer, status_line_buf, (size_t)status_line_len);
-    conn->response_len += (size_t)status_line_len;
-
-    conn->write_offset = 0; 
+    /* Try send */
     ssize_t sent = zeus_conn_send(conn, conn->response_buffer, conn->response_len);
     if (sent < 0) {
         start_graceful_close(conn);
+        conn_unref(conn);
         return -1;
     }
-    if ((size_t)sent < conn->response_len) {
-        /** partial send -> set offset and arm EPOLLOUT */
-        conn->write_offset = (size_t)sent;
-        conn->event.write_cb = handle_response_write_cb;
-        if (zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_MOD, EPOLLOUT | EPOLLET) == -1) {
-            perror("epoll_ctl mod (response partial) failed");
-            start_graceful_close(conn);
-            return -1;
-        }
 
-        /**
-         * schedule body to be sent after headers; append body to a separate buffer or
-         * in this simplified version we will attempt to send body now via same flow.
-         */
+    conn->event.write_cb = handle_response_write_cb;
 
-        if (len > 0) {
-            ssize_t body_sent = zeus_conn_send(conn, data, len);
-            if (body_sent < 0) {
-                start_graceful_close(conn);
-                return -1;
-            }
-            if ((size_t)body_sent < len) {
-                size_t remain = len - (size_t)body_sent;
-                if (conn->response_len + remain > MAX_RESPONSE_BUFFER) {
-                    fprintf(stderr, "Not enough buffer space to queue body remainder\n");
-                    start_graceful_close(conn);
-                    return -1;
-                }
-                memcpy(conn->response_buffer + conn->response_len, data + body_sent, remain);
-                conn->response_len += remain;
-            } else {
-                /** body fully sent (headers already queued). */
-            }
-        }
-        return (int)sent;
-    }
+    zeus_event_ctl(
+        conn->server,
+        &conn->event, 
+        EPOLL_CTL_MOD,
+        EPOLLOUT | EPOLLET
+    );
 
-    /**
-     * Headers fully sent. Try sending body immediately 
-     */
-
-    if (len > 0) {
-        ssize_t body_sent = zeus_conn_send(conn, data, len);
-        if (body_sent < 0) {
-            start_graceful_close(conn);
-            return -1;
-        }
-        if ((size_t)body_sent < len) {
-            /** append remainder to response buffer */
-            size_t remain = len - (size_t)body_sent;
-            if (conn->response_len + remain > MAX_RESPONSE_BUFFER) {
-                fprintf(stderr, "Not enough buffer space to queue body remainder\n");
-                start_graceful_close(conn);
-                return -1;
-            }
-            memcpy(conn->response_buffer + conn->response_len, data + body_sent, remain);
-            conn->response_len += remain;
-            conn->write_offset = conn->response_len - remain; 
-            conn->event.write_cb = handle_response_write_cb;
-            if (zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_MOD, EPOLLOUT | EPOLLET) == -1) {
-                perror("epoll_ctl mod (response body partial) failed");
-                start_graceful_close(conn);
-                return -1;
-            }
-            return (int)(status_line_len + hdr_written + body_sent);
-        }
-    }
-
-    /** Everything sent synchronously, close gracefully :D */
-    
-    start_graceful_close(conn);
-    return (int)(conn->response_len + len);
+    conn_unref(conn);
+    return 0;
 }
+
+/**
+
+int zeus_response_send_file(zeus_response_t *res, const char *filepath) {
+    zeus_conn_t *conn = get_conn_from_res(res);
+    if (!conn) {
+        return -1;
+    }
+
+    int file_fd = open(filepath, O_RDONLY);
+    if (file_fd < 0) {
+        ZLOG_PERROR("Response: Failed to open file '%s'", filepath);
+        return -1;
+    }
+
+
+    struct stat st;
+    if (fstat(file_fd, &st) < 0) {
+        ZLOG_PERROR("Response: Failed to stat file '%s'", filepath);
+        close(file_fd);
+        return -1;
+    }
+
+    conn->sendfile_fd = file_fd;
+    conn->sendfile_size = st.st_size;
+    conn->sendfile_offset = 0;
+    conn->is_sending_file = 1;
+
+
+    conn->event.write_cb = handle_response_write_cb;
+    if (zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_MOD, EPOLLOUT | EPOLLET) == -1) {
+        ZLOG_PERROR("epoll_ctl (sendfile start) failed.");
+        close(file_fd);
+        return -1;
+    }
+    return 0;
+}
+*/
+
 

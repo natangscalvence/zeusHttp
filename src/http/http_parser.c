@@ -1,6 +1,7 @@
 #include "../../include/zeushttp.h"
 #include "../../include/http/http.h"
 #include "../../include/core/conn.h"
+#include "../../include/core/log.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h> 
@@ -116,5 +117,37 @@ void http_parser_run(zeus_conn_t *conn) {
         
         router_dispatch(conn);
     }
+}
+
+/** 
+ * Implements the HTTP parser extracting the start line and headers.
+ */
+
+int parse_http_request(zeus_conn_t *conn, zeus_request_t *req) {
+    if (!conn || !req || conn->buffer_used == 0) {
+        return -1;
+    }
+
+    char *buf = conn->read_buffer;
+    size_t len = conn->buffer_used;
+
+    char *eol = memmem(buf, len, "\r\n", 2);
+    if (!eol) {
+        return -1;
+    }
+
+    char *sp1 = memchr(buf, ' ', eol - buf);
+    if (!sp1) return -1;
+
+    char *sp2 = memchr(sp1 + 1, ' ', eol - (sp1 + 1));
+    if (!sp2) return -1;
+
+    *sp1 = *sp2 = *eol = '\0';
+
+    req->method  = buf;
+    req->path    = sp1 + 1;
+    req->version = sp2 + 1;
+
+    return 0;
 }
 

@@ -5,28 +5,43 @@
 
 #include "../../include/zeushttp.h"
 #include "../../include/http/http.h"
+#include "../../include/http/router.h"
 #include "../../include/core/conn.h"
+#include "../../include/core/log.h"
 #include "../../include/core/io_event.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+extern int zeus_response_send_data(zeus_response_t *res, const char *data, size_t len);
+
+/**
+ * Global list of routes. 
+ */
+
+static size_t ROUTE_COUNT = 0;
+
 /**
  * Defines a route (path + handler).
  */
-
-typedef struct zeus_route {
-    char path[256];
-    zeus_handler_cb handler;
-} zeus_route_t;
-
-#define MAX_ROUTES 32
+#define MAX_ROUTES 64
 static zeus_route_t ROUTE_TABLE[MAX_ROUTES];
-static int ROUTE_COUNT = 0;
+
+static void not_found_handler(zeus_conn_t *conn, zeus_request_t *req) {
+    const char *response_404 = 
+        "HTTP/1.1 404 Not Found\r\n"
+        "Content-Length: 10\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "Not Found\n";
+
+    zeus_response_send_data(&conn->res, response_404, strlen(response_404));
+}
 
 /**
  * Adds a user handler to the routing table.
  */
+
 int router_add_handler(zeus_server_t *server, const char *path, zeus_handler_cb handler) {
     if (ROUTE_COUNT >= MAX_ROUTES) {
         fprintf(stderr, "Error: Max routes reached.\n");
@@ -45,25 +60,64 @@ int router_add_handler(zeus_server_t *server, const char *path, zeus_handler_cb 
 }
 
 /**
- * Finds the matching handler and executes it.
+ * The main dispatcher: Finds the corresponding route and calls
+ * its handler.
  */
+
 void router_dispatch(zeus_conn_t *conn) {
-    zeus_request_t *req = &conn->req;
-    zeus_response_t *res = &conn->res;
+    if (!conn || !conn->req.method || !conn->req.path) {
+        not_found_handler(conn, NULL);
+        return;
+    }
 
-    for (int i = 0; i < ROUTE_COUNT; i++) {
-        if (strcmp(ROUTE_TABLE[i].path, req->path) == 0) {
-            printf("Router: Matched path '%s'. Executing handler.\n", req->path);
+    const char *req_method = conn->req.method;
+    const char *req_path = conn->req.path;
 
-            /**
-             * Execute user handler.
-             */
-            ROUTE_TABLE[i].handler(req, res);
+    for (size_t i = 0; i < ROUTE_COUNT; i++) {
+        zeus_route_t *route = &ROUTE_TABLE[i];
+
+        /**
+         * Compare the method and path (exactly correspondence).
+         */
+
+        if (strcmp(req_method, route->method) ==  0 && 
+            strcmp(req_path, route->path) == 0) {
+            
+            ZLOG_INFO("Router: Matched route %s %s. Dispatching handler.",
+                route->method, route->path);
+
+            route->handler(conn, &conn->req);
             return;
         }
     }
-    printf("Router: Path '%s' not found (404).\n", req->path);
-    zeus_response_set_status(res, 404);
-    zeus_response_add_header(res, "Content-Type", "text/plain");
-    zeus_response_send_data(res, "404 Not Found", 13);
+
+    ZLOG_INFO("Router: No handler found for %s %s.", req_method, req_path);
+    not_found_handler(conn, &conn->req);
+}
+
+int register_route(const char *method, const char *path, zeus_handler_cb handler) {
+    if (!method || !path || !handler) {
+        ZLOG_FATAL("Router: Invalid route registration (method=%p, path=%p, handler=%p)", 
+            method, path, handler);
+
+        return -1;
+    }
+
+    if (ROUTE_COUNT >= MAX_ROUTES) {
+        ZLOG_FATAL("Router: Cannot register route '%s %s'. Route limit (%d) reached.",
+            method, path, MAX_ROUTES);
+    
+        return -1;
+    }
+
+    zeus_route_t *new_route = &ROUTE_TABLE[ROUTE_COUNT];
+    memset(new_route, 0, sizeof(*new_route));
+
+    strncpy(new_route->method, method, sizeof(new_route->method) - 1);
+    strncpy(new_route->path, path, sizeof(new_route->path) - 1);
+    new_route->handler = handler;
+
+    ROUTE_COUNT++;
+    ZLOG_INFO("Router: Registered route %s %s.", method, path);
+    return 0;
 }
