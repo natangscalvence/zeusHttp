@@ -18,9 +18,12 @@
 
 extern void close_connection(zeus_conn_t *conn);
 
+
 /**
  * Sends a static file using zero-copy (sendfile).
  */
+
+
 int zeus_response_send_file(zeus_response_t *res, const char *filepath) {
     zeus_conn_t *conn = (zeus_conn_t*)((char*)res - offsetof(zeus_conn_t, res));
     int total_bytes_sent = 0;
@@ -52,6 +55,7 @@ int zeus_response_send_file(zeus_response_t *res, const char *filepath) {
     /**
      * Attach Content-Lenght and close headers in response buffer.
      */
+
     size_t required_len = snprintf(
         conn->response_buffer + conn->response_len,
         MAX_RESPONSE_BUFFER - conn->response_len,
@@ -96,3 +100,4 @@ int zeus_response_send_file(zeus_response_t *res, const char *filepath) {
 
     return total_bytes_sent;
 }
+

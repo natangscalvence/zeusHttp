@@ -1,5 +1,7 @@
 #include "../include/zeushttp.h"
+#include "../include/http/router.h"
 #include "../include/config/config.h"
+#include "../include/core/log.h"
 #include <stdio.h>
 
 extern int tls_context_init(zeus_server_t *server, const char *cert_file, const char *key_file);
@@ -7,6 +9,23 @@ extern int zeus_config_load(zeus_config_t *config, const char *config_path);
 extern zeus_server_t *zeus_server_init(zeus_config_t *config);
 extern int worker_master_start(zeus_server_t *server);
 
+void root_handler(zeus_conn_t *conn, zeus_request_t *req) {
+    const char *resp = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nHello, World";
+    zeus_response_send_data(conn, resp, strlen(resp));
+}
+
+void status_handler(zeus_conn_t *conn, zeus_request_t *req) {
+    conn->res.status_code = 200;
+    const char *body = "Server Running";
+    zeus_response_send_data(&conn->res, body, strlen(body));
+}
+
+void init_routes() {
+    register_route("GET", "/", root_handler);
+    register_route("GET", "/status", status_handler);
+    
+    ZLOG_INFO("Application: Initialized all routes.");
+}
 
 /**
  * Handler for static files.
@@ -55,9 +74,12 @@ int main() {
         return 1;
     }
 
+    init_routes();
+
     printf("Master Process starting Worker Model...\n");
     if (worker_master_start(server) != 0) {
         fprintf(stderr, "Fatal: Worker master failed.\n");
         return 1;
     }
+
 }
