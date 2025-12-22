@@ -7,6 +7,7 @@
 #include "../../include/http/http.h"
 #include "../../include/http/router.h"
 #include "../../include/core/conn.h"
+#include "../../include/core/server.h"
 #include "../../include/core/log.h"
 #include "../../include/core/io_event.h"
 #include <stdio.h>
@@ -120,4 +121,47 @@ int register_route(const char *method, const char *path, zeus_handler_cb handler
     ROUTE_COUNT++;
     ZLOG_INFO("Router: Registered route %s %s.", method, path);
     return 0;
+}
+
+
+zeus_handler_cb router_find_handler(zeus_route_node_t *root, const char *path) {
+    zeus_route_node_t *curr = root;
+
+    while (curr) {
+        int cmp = strcmp(path, curr->path);
+        if (cmp == 0) {
+            return curr->handler;
+        }
+
+        if (cmp < 0) {
+            curr = curr->left;
+        } else {
+            curr = curr->right;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Dispatch a response for HTTP/2 to correct handler.
+ */
+
+void router_dispatch_h2(zeus_conn_t *conn, zeus_h2_stream_t *stream) {
+    if (!conn || !stream) {
+        return;
+    }
+
+    ZLOG_INFO("Router H2: Dispatching stream %u, path: %s", stream->id, stream->req.path);
+
+    /**
+     * Search for handler.
+     */
+
+    zeus_handler_cb handler = router_find_handler(conn->server->router_root, stream->req.path);
+
+    if (handler) {
+        zeus_h2_send_response_simple(conn, stream->id); 
+    } else {
+        ZLOG_WARN("Router H2: 404 Not Found for path: %s", stream->req.path);
+    }
 }
