@@ -6,6 +6,9 @@
 #ifndef ZEUS_SERVER_H
 #define ZEUS_SERVER_H
 
+#include "conn.h"
+#include "../http/router.h"
+
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <stdint.h>
@@ -25,6 +28,7 @@ struct zeus_server {
     int loop_fd;        /** The file descriptor for the epoll/kqueue instance. */
     zeus_config_t config;   /** All server configuration */
     SSL_CTX *ssl_ctx;   /** The global TLS context (shared among worker.) */
+    zeus_route_node_t *router_root;
 };
 
 #endif // ZEUS_SERVER_H

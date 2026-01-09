@@ -3,6 +3,8 @@
 
 #include "../zeushttp.h"
 #include "../http/http.h"
+#include "../http/http2.h"
+#include "../http/avl.h"
 #include "../config/config.h"  
 #include "io_event.h"
 
@@ -16,6 +18,11 @@
 
 typedef struct zeus_server zeus_server_t;
 typedef struct zeus_io_event zeus_io_event_t; 
+
+typedef enum {
+    PROTO_HTTP1,
+    PROTO_HTTP2
+} zeus_protocol_t;
 
 /**
  * Represents a single HTTP connection (socket)
@@ -48,6 +55,21 @@ typedef struct zeus_conn {
 
     zeus_request_t req;
     zeus_response_t res;
+
+    zeus_protocol_t protocol;
+    zeus_hpack_table_t h2_dynamic_table;
+    struct zeus_h2_stream *h2_streams;
+    int h2_preface_received;
+    int h2_ready;
+    int h2_preface_done;
+    int is_http2;
+
+    uint8_t  *h2_header_block;
+    size_t    h2_header_len;
+    uint32_t  h2_header_sid;
+
+    uint32_t h2_max_streams;
+    uint32_t h2_window_size;
 
     int sendfile_fd;                /** File descriptor of file to be sended. */
     size_t sendfile_size;           /** Total size of file */
