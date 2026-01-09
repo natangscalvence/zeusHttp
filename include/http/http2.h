@@ -1,14 +1,25 @@
 #ifndef ZEUS_HTTP2_H
 #define ZEUS_HTTP2_H
 
-#include "../core/conn.h";
-
 #include <stdint.h>
 #include <stddef.h>
 
 #define H2_PREFACE "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 #define H2_PREFACE_LEN 24
 #define H2_HDR_SIZE 9
+
+typedef struct {
+    char *name;
+    char *value;
+    size_t size;
+} zeus_hpack_entry_t;
+
+typedef struct {
+    zeus_hpack_entry_t *entries;
+    size_t count;
+    size_t current_size;
+    size_t max_size;
+} zeus_hpack_table_t;
 
 typedef enum {
     H2_FRAME_DATA          = 0x0,
@@ -30,6 +41,5 @@ typedef struct {
     uint32_t stream_id;
 } zeus_h2_frame_t;
 
-void zeus_h2_send_response_simple(zeus_conn_t *conn, uint32_t stream_id);
 
 #endif // ZEUS_HTTP2_H

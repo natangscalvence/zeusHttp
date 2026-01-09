@@ -125,34 +125,37 @@ int zeus_handle_ssl_handshake(zeus_conn_t *conn) {
  */
 
 void handle_write_cb(zeus_io_event_t *ev) {
-    if (!ev) return;
-    zeus_conn_t *conn = (zeus_conn_t *)ev->data;
+    if (!ev || !ev->data) return;
+
+    zeus_conn_t *conn = ev->data;
     conn_ref(conn);
-    if (!conn) return;
 
     if (!conn->ssl_conn) {
+        conn_unref(conn);
         return;
     }
 
     if (conn->handshake_done) {
         conn->event.write_cb = NULL;
-        zeus_event_ctl(conn->server, &conn->event, EPOLL_CTL_MOD, EPOLLIN | EPOLLET);
+        zeus_event_ctl(conn->server, &conn->event,
+                       EPOLL_CTL_MOD, EPOLLIN | EPOLLET);
+        conn_unref(conn);
         return;
     }
 
-    /** Continue handshake */
     int hs_result = zeus_handle_ssl_handshake(conn);
 
     if (hs_result < 0) {
+        close_connection(conn);
+        conn_unref(conn);
         return;
     }
 
     if (hs_result == 0) {
-        /** 
-         * handshake still in progress 
-         */
+        conn_unref(conn);
         return;
     }
+
     conn_unref(conn);
 }
 
