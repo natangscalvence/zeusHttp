@@ -3,10 +3,16 @@
 
 #include <stdint.h>
 
+#define HUFF_SYM_FOUND 0x80000000
+
+static const uint32_t huffman_table[256][16];
+
 typedef struct {
     uint32_t code;
     uint8_t len;
 } huff_code_t;
+
+/** 
 
 static const huff_code_t huff_table[256] = {
     [48] = {0x00, 5},    // '0' -> 00000
@@ -16,5 +22,7 @@ static const huff_code_t huff_table[256] = {
     [116] = {0x16, 5},   // 't' -> 10110
     [97] = {0x03, 5},    // 'a' -> 00011
 };
+
+*/
 
 #endif 
