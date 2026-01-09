@@ -23,8 +23,12 @@ OBJS = \
 	$(CORE_DIR)/worker_signals.o \
 	$(CONFIG_DIR)/config.o \
 	$(HTTP_DIR)/http_parser.o \
+	$(HTTP_DIR)/http2.o \
 	$(HTTP_DIR)/router.o \
 	$(HTTP_DIR)/response.o \
+	$(HTTP_DIR)/avl.o \
+	$(HTTP_DIR)/hpack.o \
+	$(HTTP_DIR)/huffman.o \
 	$(HTTP_FILE_DIR)/file.o \
 	$(SECURITY_DIR)/privileges.o \
 	$(SECURITY_DIR)/tls.o \
@@ -56,6 +60,18 @@ $(HTTP_DIR)/router.o: $(HTTP_DIR)/router.c $(INCLUDE_DIR)/zeushttp.h $(HTTP_INCL
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(HTTP_DIR)/http_parser.o: $(HTTP_DIR)/http_parser.c $(INCLUDE_DIR)/zeushttp.h $(HTTP_INCLUDE_DIR)/http.h $(CORE_INCLUDE_DIR)/conn.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(HTTP_DIR)/http2.o: $(HTTP_DIR)/http2.c $(INCLUDE_DIR)/zeushttp.h $(HTTP_INCLUDE_DIR)/http2.h $(CORE_INCLUDE_DIR)/conn.h
+	$(CC) $(CFLAGS) -c $< -o $@
+	
+$(HTTP_DIR)/hpack.o: $(HTTP_DIR)/hpack.c $(INCLUDE_DIR)/zeushttp.h $(CORE_INCLUDE_DIR)/conn.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(HTTP_DIR)/huffman.o: $(HTTP_DIR)/huffman.c $(INCLUDE_DIR)/zeushttp.h $(HTTP_INCLUDE_DIR)/huffman_table.h $(CORE_INCLUDE_DIR)/conn.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(HTTP_DIR)/avl.o: $(HTTP_DIR)/avl.c $(INCLUDE_DIR)/zeushttp.h $(HTTP_INCLUDE_DIR)/avl.h $(CORE_INCLUDE_DIR)/conn.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(HTTP_DIR)/response.o: $(HTTP_DIR)/response.c $(INCLUDE_DIR)/zeushttp.h $(CORE_INCLUDE_DIR)/conn.h

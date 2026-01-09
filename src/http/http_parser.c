@@ -23,6 +23,7 @@ static int parse_start_line(zeus_conn_t *conn) {
     /**
      * Find the first space (end of METHOD)
      */
+
     space_one = strchr(start, ' ');
     if (!space_one) {
         return -1;
@@ -42,6 +43,7 @@ static int parse_start_line(zeus_conn_t *conn) {
      /**
       * Verify and assign the METHOD.
       */
+
      if (strncasecmp(start, "GET", 3) != 0 && strncasecmp(start, "POST", 4) != 0) {
         return -1;
      }
@@ -50,6 +52,7 @@ static int parse_start_line(zeus_conn_t *conn) {
      /**
       * Verify and assign PATH.
       */
+
      conn->req.path = space_one + 1;
      if (strstr(conn->req.path, "../")) {
         return -1;
@@ -58,18 +61,20 @@ static int parse_start_line(zeus_conn_t *conn) {
      /**
       * Verify the version
       */
+
      char *version = space_two + 1;
      if (strncasecmp(version, "HTTP/1.", 7) != 0) {
         return -1;
      }
 
-     conn->parse_cursor = end_of_line + 3;
+     conn->parse_cursor = end_of_line + 2;
      return 1;
 }
 
 /**
  * The core HTTP State Machine entry point.
  */
+
 void http_parser_run(zeus_conn_t *conn) {
     if (conn->parser_state == PS_ERROR) {
         return;

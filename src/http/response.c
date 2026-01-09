@@ -79,19 +79,17 @@ static void handle_response_write_cb(zeus_io_event_t *ev) {
             continue;
         }
 
-        if (sent == 0) { // SSL_WANT_WRITE ou EAGAIN
+        if (sent == 0) { 
             conn_unref(conn);
             return;
         }
 
-        // Erro fatal
         ZLOG_WARN("Write error on FD %d", conn->event.fd);
         start_graceful_close(conn);
         conn_unref(conn);
         return;
     }
 
-    // Se chegou aqui, enviou TUDO.
     ZLOG_INFO("Response sent fully. Initiating close.");
     start_graceful_close(conn); 
     conn_unref(conn);
@@ -169,7 +167,7 @@ int zeus_response_send_data(zeus_response_t *res, const char *data, size_t len) 
     conn->response_len = 0;
     conn->write_offset = 0;
 
-    /* Status line */
+    /** Status line */
     int n = snprintf(
         conn->response_buffer,
         MAX_RESPONSE_BUFFER,
@@ -188,7 +186,7 @@ int zeus_response_send_data(zeus_response_t *res, const char *data, size_t len) 
 
     conn->response_len = (size_t)n;
 
-    /* Append body */
+    /** Append body */
     if (len > 0) {
         if (conn->response_len + len > MAX_RESPONSE_BUFFER) {
             conn_unref(conn);
@@ -199,7 +197,7 @@ int zeus_response_send_data(zeus_response_t *res, const char *data, size_t len) 
         conn->response_len += len;
     }
 
-    /* Try send */
+    /** Try send */
     ssize_t sent = zeus_conn_send(conn, conn->response_buffer, conn->response_len);
     if (sent < 0) {
         start_graceful_close(conn);

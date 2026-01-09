@@ -85,7 +85,7 @@ void avl_free(zeus_h2_stream_t *root) {
     avl_free(root->right);
 
     if (root->req.path) {
-        // free((void*)root->req_path);     /** Only useful if the HPACK uses malloc... */
+        free((void*)root->req.path);     /** Only useful if the HPACK uses malloc... */
     }
 
     free(root);
